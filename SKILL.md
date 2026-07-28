@@ -53,6 +53,7 @@ description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar�
   | 預設 | 主 agent + **1 個** fresh 審查 agent | ~1.5–2x | 一般交付 |
   | `thorough` | 逐筆/逐句對抗驗證(多 agent workflow) | 5–10x | 口試前、投稿前的最終查核 |
   成本大頭是 LLM 判讀,不是檢索——API 呼叫與確定性腳本(integrity)零 token 成本,quick 檔也照跑。原則:**驗證強度跟著錯誤代價走**——拿去口試的章節值得 thorough,腦力激盪的草稿 quick 就好。
+- **省 token 漏斗(所有檔位都適用)**:候選檔不要整包 Read。流程:search/snowball 存檔 → `brief` 瀏覽(一行一筆,省約 90%)→ 依標題/被引/旗標鎖定 3–5 篇 → `pick` 只讀那幾筆完整摘要。**界線**:brief 行只能做粗篩,支持度判定必須基於 pick 出來的完整摘要——不得憑一行標題判支持度。派 agent 時 prompt 只嵌檔案路徑、讓 agent 自己 brief→pick,別把摘要貼進 prompt(否則檔案+prompt 雙重進上下文)。
 - **工具鏈銜接**:**不預設使用者用 EndNote 或任何引用管理軟體**;只有使用者提到自己有相關工具/skill 時才交棒,不主動推銷流程。
 
 ## 工具
@@ -68,6 +69,8 @@ python scripts/lit_api.py paper "DOI:10.1234/abc"                           # �
 python scripts/lit_api.py batch "DOI:10.1/a" "DOI:10.2/b" "ARXIV:2301.1"    # 一次抓多篇詳情(查整份引用列表時用,省呼叫)
 python scripts/lit_api.py crossref-doi 10.1234/abc                          # DOI → 權威書目
 python scripts/lit_api.py export --doi 10.1234/abc --format ris             # 產生 RIS/BibTeX
+python scripts/lit_api.py brief results.json                                # 省 token 瀏覽已存檔結果(一行一筆,省約 90%)
+python scripts/lit_api.py pick results.json 2 5                             # 只讀選中那幾筆的完整摘要
 ```
 
 輸出皆為 JSON(export 為純文字)。API 細節、欄位意義、涵蓋範圍限制見 [references/api-notes.md](references/api-notes.md)——第一次用或遇到怪錯誤時讀它。

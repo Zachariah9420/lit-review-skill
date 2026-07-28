@@ -324,6 +324,34 @@ def cmd_arxiv(args):
         }, ensure_ascii=False, indent=1))
 
 
+def _load_entries(path):
+    d = json.load(open(path, encoding="utf-8"))
+    for key in ("results", "citations", "references", "candidates"):
+        if isinstance(d.get(key), list):
+            return d, d[key]
+    return d, []
+
+
+def cmd_brief(args):
+    """省 token 瀏覽:一行一筆,無摘要。先 brief 挑人,再 pick 精讀。"""
+    d, entries = _load_entries(args.file)
+    meta = {k: d[k] for k in ("fallback", "note", "verdict_hint") if d.get(k)}
+    if meta:
+        print(json.dumps(meta, ensure_ascii=False))
+    for i, r in enumerate(entries):
+        flags = ("A" if r.get("abstract") else "-") + ("P" if r.get("openAccessPdf") else "-") \
+                + ("!" if r.get("quality_warnings") else "")
+        print(f"[{i}] {r.get('year')} c={r.get('citationCount')} {flags} | "
+              f"{(r.get('title') or '')[:80]} | {(r.get('venue') or '')[:40]} | doi={r.get('doi')}")
+
+
+def cmd_pick(args):
+    """讀取 brief 選中的那幾筆完整資料(含摘要)。"""
+    d, entries = _load_entries(args.file)
+    sel = [entries[i] for i in args.indices if 0 <= i < len(entries)]
+    print(json.dumps(sel, ensure_ascii=False, indent=1))
+
+
 def cmd_batch(args):
     """一次抓多篇詳情(官方建議的高效做法,最多 500 筆)。"""
     url = S2_BASE + "/paper/batch?" + urllib.parse.urlencode({"fields": S2_FIELDS})
@@ -563,6 +591,15 @@ def main():
     p = sub.add_parser("batch", help="一次抓多篇詳情(id 空白分隔,最多 500 筆)")
     p.add_argument("ids", nargs="+", help="DOI:10.x/y ARXIV:... 等,空白分隔")
     p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("brief", help="省 token 瀏覽已存檔的結果(一行一筆,無摘要)")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_brief)
+
+    p = sub.add_parser("pick", help="讀取 brief 選中的那幾筆完整資料")
+    p.add_argument("file")
+    p.add_argument("indices", nargs="+", type=int)
+    p.set_defaults(func=cmd_pick)
 
     p = sub.add_parser("crossref-doi", help="DOI → Crossref 權威書目")
     p.add_argument("doi")
