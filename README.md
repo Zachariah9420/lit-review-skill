@@ -36,7 +36,18 @@ Built by a grad student finishing a thesis, battle-tested on real thesis chapter
 git clone https://github.com/<you>/lit-review-skill ~/.claude/skills/lit-review
 ```
 
-Then just ask: *"check the citations in my chapter2.docx"* or *"find literature for this paragraph: …"*
+Then just ask: *"check the citations in my chapter2.docx"* or *"find literature for this paragraph: …"* — the skill infers the mode from your input.
+
+Or use explicit commands (same words work in Claude Code as `/lit-review <cmd>` and in Codex as plain chat):
+
+| Command | Does |
+|---|---|
+| `check <draft/file>` | Audit citations (Mode B; auto-adds Mode A if references exist) |
+| `find <paragraph/topic>` | Find supporting literature (Mode A) |
+| `write <topic>` | Literature-grounded article with citations (Mode C) |
+| `verify <one citation>` | Quick single-citation existence + bibliography check |
+| `deep` / `quick` | Depth modifier: escalate to OA full text / abstracts only |
+| `bibtex` / `no-ris` | Reference file format preference |
 
 **Codex / other agents:** add one line to your `AGENTS.md`:
 
@@ -90,7 +101,7 @@ Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`
 
 ### 安裝
 
-**Claude Code**:clone 到 `~/.claude/skills/lit-review`,然後直接說「幫我查這章的引用」就會觸發。
+**Claude Code**:clone 到 `~/.claude/skills/lit-review`,然後直接說「幫我查這章的引用」就會觸發(自動推斷模式);也可下明確指令:`check <檔案>` 查核、`find <段落>` 找文獻、`write <主題>` 文獻支撐寫作、`verify <單筆引用>` 快查,修飾詞 `deep`/`quick` 控制深度、`bibtex`/`no-ris` 控制輸出。Codex 打一樣的指令詞即可。
 
 **Codex / 其他 agent**:在 `AGENTS.md` 加一行「文獻搜尋與引用查核請讀 `~/.claude/skills/lit-review/SKILL.md` 並照其流程執行」。
 
