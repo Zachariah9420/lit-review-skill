@@ -1,6 +1,6 @@
 ---
 name: lit-review
-description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻,並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點),也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章;產出查核報告與可匯入 EndNote/Zotero 的 RIS/BibTeX 檔。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review,貼文章要求配文獻、問「這段話有沒有文獻支持」,或要求「寫一篇帶參考文獻的文章/講解某主題並附文獻」時,都要使用本 skill。
+description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻,並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點),也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章;另含研究生工具組:文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review,貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時,都要使用本 skill。
 ---
 
 # lit-review:文獻抓取與引用查核
@@ -25,6 +25,16 @@ description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar�
 | `verify <單筆引用>` | 單筆快查(存在性+書目,不做整篇流程) | `verify Vaswani 2017, Attention is all you need` |
 | 修飾詞 `deep` / `quick` | 查核深度:含 OA 全文 / 僅摘要層 | `check deep 第二章.docx` |
 | 修飾詞 `bibtex` / `no-ris` | 引用檔格式偏好 | `find bibtex <段落>` |
+| `map <主題>` | 領域地圖:奠基文獻/關鍵作者/近年走向 | `map LLM 幻覺偵測` |
+| `gap <X 與 Y>` | Research gap 偵測(附誠實聲明) | `gap 知識圖譜 與 維修SOP生成` |
+| `matrix <清單或主題>` | 文獻矩陣(方法/樣本/發現/限制對照表) | `matrix 這 12 篇:…` |
+| `notes <DOI或標題>` | 單篇閱讀筆記卡 | `notes DOI:10.1038/s41586-024-07500-2` |
+| `integrity <檔案>` | 文內引用 vs 列表三向核對(零 API) | `integrity 第二章.docx` |
+| `glossary <檔案>` | 中英術語一致性檢查 | `glossary 全文.docx` |
+| `rehearse <檔案>` | 審稿人/口試提問預演 | `rehearse 第二章.docx` |
+| `watch <DOI清單>` | 新文獻哨兵(可搭排程) | `watch 10.1037/xxx 10.1145/yyy` |
+
+後八個是研究生工具組——**執行前先讀 [references/grad-toolkit.md](references/grad-toolkit.md) 的對應小節**,每個功能的工作流程、誠實聲明要求與已知限制都在那裡。`integrity` 用 `scripts/cite_integrity.py`(確定性腳本,任何 check 交付前都順手跑一次)。
 
 看到 ARGUMENTS 或訊息以這些指令詞開頭 → **直接進對應模式,不再推斷、不再確認**。
 

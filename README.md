@@ -21,6 +21,38 @@ Built by a grad student finishing a thesis, battle-tested on real thesis chapter
 3. **Claim support** — reads the abstract and checks whether the paper supports the *specific sentence* citing it; flags overreach ("paper says correlation, you wrote causation"), null-result traps, and subject-population mismatches
 4. **Equations & technical details** — when your text attributes a formula to a source, fetches the open-access PDF and compares term by term (caught a missing √ in the attention formula during testing)
 
+### Architecture / 系統架構
+
+```mermaid
+flowchart TB
+    U["使用者輸入 User input<br/>草稿 draft / 主題 topic / 指令 command"] --> R{"模式路由 Mode router<br/>指令優先,無指令則推斷"}
+
+    R -->|find| A["模式 A 找文獻<br/>Find literature"]
+    R -->|check| B["模式 B 查核引用<br/>Audit citations"]
+    R -->|write| C["模式 C 文獻支撐寫作<br/>Grounded writing"]
+    R -->|"map / gap / matrix / notes<br/>integrity / glossary / rehearse / watch"| G["研究生工具組<br/>Grad toolkit"]
+
+    A --> E
+    B --> E
+    C --> E
+    G --> E
+
+    subgraph E["共用引擎 scripts/lit_api.py(純標準函式庫 stdlib-only)"]
+        direction LR
+        S2["Semantic Scholar"] -. "429 備援 fallback" .-> OA["OpenAlex"]
+        AX["arXiv"] -. "備援 fallback" .-> S2
+        CR["Crossref<br/>書目權威 authority"]
+    end
+
+    E --> V["驗證層 Verification<br/>品質紅旗 quality flags · 對抗式自查 adversarial self-audit<br/>證據層級標註 evidence levels(摘要/全文 p.X/❓)"]
+
+    V --> O1["查核報告<br/>Audit report"]
+    V --> O2["RIS / BibTeX"]
+    V --> O3["帶引用文章·文獻矩陣·筆記卡<br/>Grounded article · matrix · notes"]
+```
+
+Three honesty mechanisms run through every path: bibliographic fields come only from API responses (never from LLM memory), every verdict carries its evidence level, and generated output is audited by a fresh-context skeptic before delivery.
+
 ### Design principles
 
 - **Honesty over polish.** "Not found" is reported as not found; "can't judge" is ❓, never a guess. One wrong "verified" is worse than ten honest "unverified".
