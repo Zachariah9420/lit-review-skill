@@ -89,5 +89,6 @@
 |---|---|---|
 | 大量 429(重試後仍失敗) | S2 共享池尖峰 | 等 1–2 分鐘再跑,或申請 S2_API_KEY |
 | export 回 404 | DOI 打錯或是 DataCite 的 DOI | 用 crossref-doi 先確認 DOI 存在 |
+| export 的 RIS 有空 TI 或截斷 T2 | doi.org 對部分出版社(如 ACL Anthology)的 metadata 品質差 | **匯出後不能只數 TY/ER,要 grep 檢查 `TI  - ` 後非空**;缺欄用 S2/Crossref 回傳值手補 |
 | verify 候選全是無關文獻 | 標題太短/太泛 | 加上副標題或第一作者再查 |
 | arXiv 查無但確定存在 | 查詢詞含特殊符號 | 改用 `ti:"部分標題"` 精確查 |
