@@ -1,0 +1,8 @@
+# 金鑰絕不進 git
+.env
+.env.*
+*.env
+
+__pycache__/
+*.pyc
+.venv/
