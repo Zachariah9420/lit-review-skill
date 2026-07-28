@@ -57,7 +57,7 @@ Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`
 
 ### Honest limitations
 
-- Judgments are abstract-based; "gap" findings mean *the abstract doesn't show it*, not *the paper doesn't contain it*
+- Default judgments are abstract-based; "gap" findings mean *the abstract doesn't show it*, not *the paper doesn't contain it*. For verdicts the abstract can't settle, the skill escalates to open-access full text when available (and labels the evidence level) — but paywalled papers stay honestly marked "cannot judge"
 - Chinese-language literature: best-effort via Google Scholar when available, otherwise flagged for manual check (the structured APIs barely cover it)
 - Books (especially pre-2010): APIs often only index their *reviews* — the skill uses reviews as indirect existence evidence and tells you to check the ISBN
 - Google Scholar rate-limits intermittently; a zero-result there is treated as "check failed", never "doesn't exist"
@@ -102,7 +102,7 @@ Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`
 
 ### 誠實的限制
 
-- 判讀基於摘要;「缺口」代表摘要看不出來,不代表內文沒有
+- 預設判讀基於摘要;「缺口」代表摘要看不出來,不代表內文沒有。摘要判不動的關鍵引用會升級到開放取用全文(並標明證據層級);付費牆內的誠實標「無法判斷」
 - 中文文獻:有 Google Scholar 工具時盡力查(標信心中等),否則列人工查核——結構化 API 幾乎不收
 - 專書(尤其 2010 年前):API 常只收錄書評——skill 會把書評當存在性間接證據,並提醒你核 ISBN
 - `references/api-notes.md` 是實戰踩坑全紀錄,除錯前先讀它
