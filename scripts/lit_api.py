@@ -324,6 +324,149 @@ def cmd_arxiv(args):
         }, ensure_ascii=False, indent=1))
 
 
+ENDNOTE_TYPE = {"journal-article": ("Journal Article", "17"),
+                "proceedings-article": ("Conference Paper", "47"),
+                "book": ("Book", "6"), "book-chapter": ("Book Section", "5"),
+                "posted-content": ("Electronic Article", "43"),
+                "report": ("Report", "27")}
+
+
+def cmd_export_xml(args):
+    """EndNote XML 匯出:可把查核結果(entry 的 research_notes 欄)與品質紅旗
+    一起帶進 EndNote 的 Research Notes。輸入為本工具任何存檔 JSON(或 pick 輸出)。"""
+    if args.file.strip().startswith("["):
+        entries = json.loads(args.file)
+    else:
+        try:
+            entries = json.load(open(args.file, encoding="utf-8"))
+            if isinstance(entries, dict):
+                _, entries = _load_entries(args.file)
+        except (OSError, json.JSONDecodeError):
+            _, entries = _load_entries(args.file)
+    if args.indices:
+        entries = [entries[i] for i in args.indices if 0 <= i < len(entries)]
+
+    root = ET.Element("xml")
+    records = ET.SubElement(root, "records")
+
+    def styled(parent, tag, text):
+        el = ET.SubElement(parent, tag)
+        st = ET.SubElement(el, "style")
+        st.set("face", "normal"); st.set("font", "default"); st.set("size", "100%")
+        st.text = str(text)
+
+    for e in entries:
+        rec = ET.SubElement(records, "record")
+        etype = e.get("type") or ("posted-content" if e.get("arxiv") and not e.get("doi") else "journal-article")
+        name, num = ENDNOTE_TYPE.get(etype, ("Generic", "13"))
+        rt = ET.SubElement(rec, "ref-type"); rt.set("name", name); rt.text = num
+        auths = ET.SubElement(ET.SubElement(rec, "contributors"), "authors")
+        for a in e.get("authors") or []:
+            if a:
+                styled(auths, "author", a)
+        titles = ET.SubElement(rec, "titles")
+        styled(titles, "title", e.get("title") or "")
+        venue = e.get("venue") or e.get("container")
+        if venue:
+            styled(titles, "secondary-title", venue)
+        for src, tag in (("volume", "volume"), ("issue", "number"), ("page", "pages")):
+            if e.get(src):
+                styled(rec, tag, e[src])
+        dates = ET.SubElement(rec, "dates")
+        if e.get("year"):
+            styled(dates, "year", e["year"])
+        if e.get("doi"):
+            styled(rec, "electronic-resource-num", e["doi"])
+        if e.get("abstract"):
+            styled(rec, "abstract", e["abstract"])
+        notes = e.get("research_notes") or ""
+        if e.get("quality_warnings"):
+            notes = (notes + "\n" if notes else "") + "品質紅旗:" + "; ".join(e["quality_warnings"])
+        if e.get("arxiv"):
+            notes = (notes + "\n" if notes else "") + f"arXiv:{e['arxiv']}"
+        if notes:
+            styled(rec, "research-notes", notes)
+        if e.get("doi") or e.get("arxiv"):
+            url = f"https://doi.org/{e['doi']}" if e.get("doi") else f"https://arxiv.org/abs/{e['arxiv']}"
+            styled(ET.SubElement(ET.SubElement(rec, "urls"), "related-urls"), "url", url)
+
+    print('<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(root, encoding="unicode"))
+
+
+def cmd_versions(args):
+    """preprint ↔ 正式版解析:回報同一研究的版本鏈與引用建議。"""
+    ident = args.id.strip()
+    out = {"query": ident, "arxiv": None, "s2_record": None, "published_version": None}
+    title = None
+    if ident.upper().startswith("ARXIV:"):
+        out["arxiv"] = ident[6:]
+        try:
+            sp = s2_get_paper("ARXIV:" + out["arxiv"])
+            title = sp.get("title")
+            out["s2_record"] = {k: sp.get(k) for k in ("title", "year", "venue", "doi")}
+            pub_doi = sp.get("doi")
+            if pub_doi and not pub_doi.startswith("10.48550"):
+                # S2 會合併同一研究的版本:其記錄帶非 arXiv DOI 即正式版,以 Crossref 取權威書目
+                try:
+                    cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(pub_doi, safe="/"),
+                                             crossref_headers(), 1.0, "crossref"))
+                    out["published_version"] = norm_crossref(cr.get("message", {}))
+                except OSError:
+                    out["published_version"] = {"doi": pub_doi, "source": "semanticscholar(未經Crossref覆核)"}
+        except OSError as e:
+            out["s2_error"] = str(e)
+        if title is None:
+            try:  # S2 失敗時退 arXiv API 拿標題,供後續 Crossref 標題搜尋
+                entries = arxiv_query(None, 1, id_list=out["arxiv"])
+                if entries:
+                    title = entries[0]["title"]
+                    out["arxiv_record"] = {"title": title, "year": entries[0]["year"]}
+            except OSError as e:
+                out["arxiv_error"] = str(e)
+    elif "/" in ident or ident.upper().startswith("DOI:"):
+        doi = ident.replace("DOI:", "")
+        try:
+            cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(doi, safe="/"),
+                                     crossref_headers(), 1.0, "crossref"))
+            n = norm_crossref(cr.get("message", {}))
+            title = n.get("title")
+            out["s2_record"] = n
+        except urllib.error.HTTPError:
+            pass
+        try:
+            sp = s2_get_paper("DOI:" + doi)
+            out["arxiv"] = sp.get("arxiv")
+            title = title or sp.get("title")
+        except urllib.error.HTTPError:
+            pass
+    else:
+        title = ident
+
+    if title and not out["published_version"]:
+        pubs = []
+        try:
+            for c in crossref_search(title, rows=5):
+                if (c.get("doi") or "").startswith("10.48550"):
+                    continue  # arXiv 自身的 DataCite DOI 不算正式版
+                if c.get("title") and title_sim(title, c.get("title")) >= 0.93:
+                    pubs.append(c)
+        except Exception as e:
+            out["crossref_error"] = str(e)
+        if pubs:
+            out["published_version"] = pubs[0]
+
+    if out["published_version"]:
+        p = out["published_version"]
+        out["recommendation"] = (f"已有正式發表版({p.get('container') or p.get('type')}, "
+                                 f"{p.get('year')},DOI {p.get('doi')}),學術慣例應引正式版")
+    elif out["arxiv"]:
+        out["recommendation"] = ("Crossref 查無正式發表版(不保證不存在,會議論文集常不註冊 DOI);"
+                                 "目前引 arXiv 版合理,投稿前可再查一次")
+    else:
+        out["recommendation"] = "無法解析版本鏈,請確認輸入為 DOI:x / ARXIV:x / 完整標題"
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+
+
 def cmd_retract(args):
     """查撤稿/更正記錄:Crossref 的 update notices(含 Retraction Watch 資料)。"""
     out = []
@@ -628,6 +771,15 @@ def main():
     p = sub.add_parser("batch", help="一次抓多篇詳情(id 空白分隔,最多 500 筆)")
     p.add_argument("ids", nargs="+", help="DOI:10.x/y ARXIV:... 等,空白分隔")
     p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("export-xml", help="EndNote XML 匯出(research_notes/紅旗進 Research Notes 欄)")
+    p.add_argument("file", help="任何本工具存檔 JSON、pick 輸出檔,或直接貼 JSON 陣列")
+    p.add_argument("indices", nargs="*", type=int, help="選填:只匯出這幾筆")
+    p.set_defaults(func=cmd_export_xml)
+
+    p = sub.add_parser("versions", help="preprint↔正式版解析(引用建議)")
+    p.add_argument("id", help="DOI:10.x/y | ARXIV:2301.12345 | 完整標題")
+    p.set_defaults(func=cmd_versions)
 
     p = sub.add_parser("retract", help="查撤稿/更正記錄(Crossref update notices)")
     p.add_argument("dois", nargs="+", help="一個或多個 DOI")

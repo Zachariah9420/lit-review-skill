@@ -82,6 +82,12 @@
 
 - Claude 的 Read 工具讀 PDF 需要 poppler;Windows 常沒裝。降級路徑:PyMuPDF(`import fitz`)的 `page.get_text()` 抽文字,實測公式周邊的**敘述句**(如 "divide each by √dk")比公式本身的字元轉換可靠——比對時優先找敘述句證據。
 
+## versions(版本解析)與 export-xml(EndNote 匯出)
+
+- `versions` 的判定順序:**S2 版本合併訊號優先**(S2 對 arXiv 論文的記錄若帶非 10.48550 的 DOI,即正式版,再以 Crossref 取權威書目)→ 退 Crossref 標題搜尋(title_sim≥0.93,排除 arXiv 的 DataCite DOI 與空標題候選)。「查無正式版」≠ 不存在——會議論文集(NeurIPS/ICLR 等)常不註冊 Crossref DOI。
+- `export-xml` 產 EndNote XML:entry 的 `research_notes` 欄+品質紅旗+arXiv 編號會進 EndNote 的 Research Notes——把查核結論隨文獻帶進引用管理軟體。輸入吃本工具任何存檔 JSON 或 pick 輸出;實務流程:pick 選定 → agent 在 JSON 加 research_notes(支持度/證據句)→ export-xml。
+- 撤稿查詢 `retract`:Crossref update-notice(含 Retraction Watch 併入資料),retraction/expression_of_concern 級 → 🚨 不可引用;correction 級 → ⚠️ 確認更正內容。**無記錄 ≠ 保證沒事**(覆蓋不完備,尤其非英文期刊)。實測:Wakefield 1998 抓到 2004 部分撤回+2010 全文撤稿。
+
 ## 書籍類文獻的驗證盲點
 
 - Crossref/S2 對專書(尤其 2010 年前)收錄很差,`verify` 常只命中**同名書評**(title_sim=1.0 但作者是書評人)——這不是配對錯誤,是資料庫特性。
