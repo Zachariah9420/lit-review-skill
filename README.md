@@ -23,6 +23,16 @@ Built by a grad student finishing a thesis, battle-tested on real thesis chapter
 
 ### Architecture / 系統架構
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img src="assets/architecture-light.svg" alt="lit-review architecture: input → modes → engine → verification → outputs, with a self-audit loop" width="100%">
+</picture>
+
+*(圖由 `assets/gen_diagram.py` 產生——改文字或配色後重跑即可,調色盤經 CVD 色覺驗證。Mermaid 原始碼版如下,供快速編輯。)*
+
+<details>
+<summary>Mermaid version (editable in-browser)</summary>
+
 ```mermaid
 flowchart TB
     U["使用者輸入 User input<br/>草稿 draft / 主題 topic / 指令 command"] --> R{"模式路由 Mode router<br/>指令優先,無指令則推斷"}
@@ -50,6 +60,8 @@ flowchart TB
     V --> O2["RIS / BibTeX"]
     V --> O3["帶引用文章·文獻矩陣·筆記卡<br/>Grounded article · matrix · notes"]
 ```
+
+</details>
 
 Three honesty mechanisms run through every path: bibliographic fields come only from API responses (never from LLM memory), every verdict carries its evidence level, and generated output is audited by a fresh-context skeptic before delivery.
 

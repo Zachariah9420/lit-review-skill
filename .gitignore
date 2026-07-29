@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# 自檢預覽產物不入庫
+assets/_preview_*.png

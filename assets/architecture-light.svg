@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1274" height="622" viewBox="0 0 1274 622" font-family="system-ui,-apple-system,'Segoe UI','Noto Sans TC',sans-serif">
+<rect width="1274" height="622" rx="14" fill="#fcfcfb"/>
+<text x="52" y="64" font-size="30" font-weight="700" fill="#0b0b0b">lit-review</text>
+<text x="212" y="64" font-size="15" fill="#52514e">evidence-layer skill for LLM agents</text>
+<text x="52" y="96" font-size="15" fill="#52514e">先檢索、後寫作、寫完自查 —— 每個引用都經得起追問&#160;&#160;·&#160;&#160;retrieve first, write second, self-audit last</text>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#898781"/></marker></defs>
+<rect x="52" y="148" width="210" height="302" rx="12" fill="#2a78d6" fill-opacity="0.07" stroke="#2a78d6" stroke-width="1.6"/>
+<rect x="60" y="148" width="194" height="5" rx="2.5" fill="#2a78d6"/>
+<text x="68" y="188" font-size="17" font-weight="700" fill="#0b0b0b">輸入</text>
+<text x="246" y="188" font-size="11" letter-spacing="1.5" text-anchor="end" fill="#898781">INPUT</text>
+<circle cx="73" cy="218" r="3" fill="#2a78d6"/>
+<text x="86" y="222" font-size="13" fill="#0b0b0b">論文草稿 thesis draft</text>
+<circle cx="73" cy="243" r="3" fill="#2a78d6"/>
+<text x="86" y="247" font-size="13" fill="#0b0b0b">研究主題 topic</text>
+<circle cx="73" cy="268" r="3" fill="#2a78d6"/>
+<text x="86" y="272" font-size="13" fill="#0b0b0b">單筆引用 citation</text>
+<line x1="68" y1="289" x2="246" y2="289" stroke="#e1e0d9" stroke-width="1"/>
+<text x="86" y="307" font-size="12.5" fill="#52514e">19 個指令或自然語言:</text>
+<text x="86" y="330" font-size="12.5" fill="#52514e">check · find · write</text>
+<text x="86" y="353" font-size="12.5" fill="#52514e">verify · annotate …</text>
+<text x="86" y="376" font-size="12.5" fill="#52514e">無指令時自動推斷模式</text>
+<rect x="292" y="148" width="210" height="302" rx="12" fill="#eb6834" fill-opacity="0.07" stroke="#eb6834" stroke-width="1.6"/>
+<rect x="300" y="148" width="194" height="5" rx="2.5" fill="#eb6834"/>
+<text x="308" y="188" font-size="17" font-weight="700" fill="#0b0b0b">三模式+工具組</text>
+<text x="486" y="188" font-size="11" letter-spacing="1.5" text-anchor="end" fill="#898781">MODES</text>
+<circle cx="313" cy="218" r="3" fill="#eb6834"/>
+<text x="326" y="222" font-size="13" fill="#0b0b0b">A|找文獻 find</text>
+<circle cx="313" cy="243" r="3" fill="#eb6834"/>
+<text x="326" y="247" font-size="13" fill="#0b0b0b">B|查核引用 audit</text>
+<circle cx="313" cy="268" r="3" fill="#eb6834"/>
+<text x="326" y="272" font-size="13" fill="#0b0b0b">C|文獻支撐寫作 write</text>
+<line x1="308" y1="289" x2="486" y2="289" stroke="#e1e0d9" stroke-width="1"/>
+<text x="326" y="307" font-size="12.5" fill="#52514e">研究生工具組 toolkit:</text>
+<text x="326" y="330" font-size="12.5" fill="#52514e">matrix · map · gap</text>
+<text x="326" y="353" font-size="12.5" fill="#52514e">counter · strength</text>
+<text x="326" y="376" font-size="12.5" fill="#52514e">claims · integrity</text>
+<text x="326" y="399" font-size="12.5" fill="#52514e">glossary · rehearse …</text>
+<rect x="532" y="148" width="210" height="302" rx="12" fill="#1baf7a" fill-opacity="0.07" stroke="#1baf7a" stroke-width="1.6"/>
+<rect x="540" y="148" width="194" height="5" rx="2.5" fill="#1baf7a"/>
+<text x="548" y="188" font-size="17" font-weight="700" fill="#0b0b0b">檢索引擎</text>
+<text x="726" y="188" font-size="11" letter-spacing="1.5" text-anchor="end" fill="#898781">ENGINE</text>
+<text x="566" y="222" font-size="12.5" fill="#52514e">lit_api.py|純標準函式庫</text>
+<circle cx="553" cy="241" r="3" fill="#1baf7a"/>
+<text x="566" y="245" font-size="13" fill="#0b0b0b">Semantic Scholar</text>
+<circle cx="553" cy="266" r="3" fill="#1baf7a"/>
+<text x="566" y="270" font-size="13" fill="#0b0b0b">⇄ OpenAlex 429 備援</text>
+<circle cx="553" cy="291" r="3" fill="#1baf7a"/>
+<text x="566" y="295" font-size="13" fill="#0b0b0b">Crossref 書目權威</text>
+<circle cx="553" cy="316" r="3" fill="#1baf7a"/>
+<text x="566" y="320" font-size="13" fill="#0b0b0b">arXiv(掛掉退 S2)</text>
+<circle cx="553" cy="341" r="3" fill="#1baf7a"/>
+<text x="566" y="345" font-size="13" fill="#0b0b0b">retract 撤稿 · versions</text>
+<text x="566" y="370" font-size="12.5" fill="#52514e">snowball · batch</text>
+<text x="566" y="393" font-size="12.5" fill="#52514e">brief/pick 省token漏斗</text>
+<rect x="772" y="148" width="210" height="302" rx="12" fill="#eda100" fill-opacity="0.07" stroke="#eda100" stroke-width="1.6"/>
+<rect x="780" y="148" width="194" height="5" rx="2.5" fill="#eda100"/>
+<text x="788" y="188" font-size="17" font-weight="700" fill="#0b0b0b">驗證層</text>
+<text x="966" y="188" font-size="11" letter-spacing="1.5" text-anchor="end" fill="#898781">VERIFY</text>
+<circle cx="793" cy="218" r="3" fill="#eda100"/>
+<text x="806" y="222" font-size="13" fill="#0b0b0b">三層隔離 firewalls:</text>
+<text x="806" y="247" font-size="12.5" fill="#52514e">證據 · 角色 · 注入</text>
+<circle cx="793" cy="266" r="3" fill="#eda100"/>
+<text x="806" y="270" font-size="13" fill="#0b0b0b">品質紅旗 quality flags</text>
+<circle cx="793" cy="291" r="3" fill="#eda100"/>
+<text x="806" y="295" font-size="13" fill="#0b0b0b">對抗式自查 self-audit</text>
+<circle cx="793" cy="316" r="3" fill="#eda100"/>
+<text x="806" y="320" font-size="13" fill="#0b0b0b">證據層級 evidence levels</text>
+<text x="806" y="345" font-size="12.5" fill="#52514e">[摘要] [全文 p.X] [?]</text>
+<text x="806" y="368" font-size="12.5" fill="#52514e">強度 quick/預設/thorough</text>
+<rect x="1012" y="148" width="210" height="302" rx="12" fill="#e87ba4" fill-opacity="0.07" stroke="#e87ba4" stroke-width="1.6"/>
+<rect x="1020" y="148" width="194" height="5" rx="2.5" fill="#e87ba4"/>
+<text x="1028" y="188" font-size="17" font-weight="700" fill="#0b0b0b">產出</text>
+<text x="1206" y="188" font-size="11" letter-spacing="1.5" text-anchor="end" fill="#898781">OUTPUT</text>
+<circle cx="1033" cy="218" r="3" fill="#e87ba4"/>
+<text x="1046" y="222" font-size="13" fill="#0b0b0b">查核報告 audit report</text>
+<circle cx="1033" cy="243" r="3" fill="#e87ba4"/>
+<text x="1046" y="247" font-size="13" fill="#0b0b0b">給作者修改清單 fix list</text>
+<circle cx="1033" cy="268" r="3" fill="#e87ba4"/>
+<text x="1046" y="272" font-size="13" fill="#0b0b0b">RIS · BibTeX · EN-XML</text>
+<circle cx="1033" cy="293" r="3" fill="#e87ba4"/>
+<text x="1046" y="297" font-size="13" fill="#0b0b0b">帶引用文章 article</text>
+<circle cx="1033" cy="318" r="3" fill="#e87ba4"/>
+<text x="1046" y="322" font-size="13" fill="#0b0b0b">文獻矩陣 matrix</text>
+<circle cx="1033" cy="343" r="3" fill="#e87ba4"/>
+<text x="1046" y="347" font-size="13" fill="#0b0b0b">筆記卡 · 領域地圖</text>
+<line x1="266" y1="299.0" x2="280" y2="299.0" stroke="#898781" stroke-width="2.2"/>
+<path d="M 288 299.0 L 279 293.5 L 279 304.5 Z" fill="#898781"/>
+<line x1="506" y1="299.0" x2="520" y2="299.0" stroke="#898781" stroke-width="2.2"/>
+<path d="M 528 299.0 L 519 293.5 L 519 304.5 Z" fill="#898781"/>
+<line x1="746" y1="299.0" x2="760" y2="299.0" stroke="#898781" stroke-width="2.2"/>
+<path d="M 768 299.0 L 759 293.5 L 759 304.5 Z" fill="#898781"/>
+<line x1="986" y1="299.0" x2="1000" y2="299.0" stroke="#898781" stroke-width="2.2"/>
+<path d="M 1008 299.0 L 999 293.5 L 999 304.5 Z" fill="#898781"/>
+<path d="M 877.0 453 C 877.0 480, 397.0 480, 397.0 464" fill="none" stroke="#eda100" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M 397.0 455 L 391.5 465 L 402.5 465 Z" fill="#eda100"/>
+<text x="637.0" y="493" font-size="12.5" text-anchor="middle" fill="#52514e">未過自查就修正重來 — fix before delivery</text>
+<rect x="52" y="528" width="1170" height="56" rx="10" fill="none" stroke="#e1e0d9" stroke-width="1.2"/>
+<text x="637.0" y="552" font-size="13.5" font-weight="600" text-anchor="middle" fill="#0b0b0b">查不到 ≠ 不存在&#160;&#160;&#160;·&#160;&#160;&#160;記憶只能起疑,不能作證&#160;&#160;&#160;·&#160;&#160;&#160;每個判定附證據層級</text>
+<text x="637.0" y="572" font-size="11.5" text-anchor="middle" fill="#898781">not found &#8800; nonexistent&#160;&#160;·&#160;&#160;memory may suspect — only evidence convicts&#160;&#160;·&#160;&#160;every verdict carries its evidence level</text>
+</svg>
