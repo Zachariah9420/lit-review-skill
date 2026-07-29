@@ -324,6 +324,43 @@ def cmd_arxiv(args):
         }, ensure_ascii=False, indent=1))
 
 
+def cmd_retract(args):
+    """查撤稿/更正記錄:Crossref 的 update notices(含 Retraction Watch 資料)。"""
+    out = []
+    for doi in args.dois:
+        doi = doi.replace("DOI:", "").strip()
+        params = {"filter": f"updates:{doi}", "rows": "5"}
+        mailto = os.environ.get("CROSSREF_MAILTO")
+        if mailto:
+            params["mailto"] = mailto
+        url = CROSSREF_BASE + "/works?" + urllib.parse.urlencode(params)
+        try:
+            data = json.loads(http_get(url, crossref_headers(), 1.0, "crossref"))
+            notices = []
+            for it in data.get("message", {}).get("items", []):
+                for u in it.get("update-to", []):
+                    if (u.get("DOI") or "").lower() == doi.lower():
+                        notices.append({
+                            "type": u.get("type"),
+                            "label": u.get("label"),
+                            "notice_doi": it.get("DOI"),
+                            "notice_title": (it.get("title") or [None])[0],
+                            "date": (u.get("updated") or {}).get("date-parts", [[None]])[0],
+                        })
+            severe = any((n.get("type") or "").lower() in
+                         ("retraction", "retraction_notice", "removal", "withdrawal",
+                          "partial_retraction", "expression_of_concern") for n in notices)
+            status = ("🚨 有撤稿/疑慮記錄,不可引用,詳見 notices" if severe
+                      else ("⚠️ 有更正記錄(correction/erratum),引用前確認更正內容" if notices
+                            else "✅ Crossref 無已知撤稿/更正記錄"))
+            out.append({"doi": doi, "status": status, "notices": notices})
+        except OSError as e:
+            out.append({"doi": doi, "status": "❓ 查詢失敗", "error": str(e)})
+    out.append({"_note": "Crossref 撤稿覆蓋不完備(尤其非英文期刊):無記錄 ≠ 保證沒事;"
+                         "生醫/心理領域高風險引用建議再以 Retraction Watch 網站人工複核"})
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+
+
 def _load_entries(path):
     d = json.load(open(path, encoding="utf-8"))
     for key in ("results", "citations", "references", "candidates"):
@@ -591,6 +628,10 @@ def main():
     p = sub.add_parser("batch", help="一次抓多篇詳情(id 空白分隔,最多 500 筆)")
     p.add_argument("ids", nargs="+", help="DOI:10.x/y ARXIV:... 等,空白分隔")
     p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("retract", help="查撤稿/更正記錄(Crossref update notices)")
+    p.add_argument("dois", nargs="+", help="一個或多個 DOI")
+    p.set_defaults(func=cmd_retract)
 
     p = sub.add_parser("brief", help="省 token 瀏覽已存檔的結果(一行一筆,無摘要)")
     p.add_argument("file")

@@ -1,6 +1,6 @@
 ---
 name: lit-review
-description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻,並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點),也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章;另含研究生工具組:文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review,貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時,都要使用本 skill。
+description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻,並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點),也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章;另含研究生工具組:文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤、引用需求標記(annotate)、反面證據搜尋(counter)、證據強度評級(strength)、claim-evidence 總表(claims)、撤稿查詢(retract)。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review,貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時,都要使用本 skill。
 ---
 
 # lit-review:文獻抓取與引用查核
@@ -33,6 +33,11 @@ description: 根據使用者的文章或論文草稿,自動用 Semantic Scholar�
 | `glossary <檔案>` | 中英術語一致性檢查 | `glossary 全文.docx` |
 | `rehearse <檔案>` | 審稿人/口試提問預演 | `rehearse 第二章.docx` |
 | `watch <DOI清單>` | 新文獻哨兵(可搭排程) | `watch 10.1037/xxx 10.1145/yyy` |
+| `annotate <檔案或段落>` | 標記哪句需要引用(citation_needed_map) | `annotate 緒論草稿.docx` |
+| `counter <論點>` | 主動找反面/零結果證據 | `counter 社群媒體降低學業表現` |
+| `strength <文獻+論點>` | 證據強度評級(HIGH/MEDIUM/LOW/UNKNOWN) | `strength 這篇撐不撐得起因果宣稱` |
+| `claims <檔案>` | Claim–Evidence 總表(支持/反對/強度/總評) | `claims 第二章.docx` |
+| `retract <DOI清單>` | 撤稿/更正記錄查詢(check 已預設內含) | `retract 10.1016/xxx` |
 
 後八個是研究生工具組——**執行前先讀 [references/grad-toolkit.md](references/grad-toolkit.md) 的對應小節**,每個功能的工作流程、誠實聲明要求與已知限制都在那裡。`integrity` 用 `scripts/cite_integrity.py`(確定性腳本,任何 check 交付前都順手跑一次)。
 
@@ -97,6 +102,7 @@ python scripts/lit_api.py pick results.json 2 5                             # �
    - `found`:存在,進下一步。
    - `similar_found`:標題相近但有出入——人工比對候選,可能是版本差異(preprint vs 正式版)、副標題被省略、也可能是真的寫錯,判讀後歸類。
    - `not_found`:換一次查詢再試(去掉副標題、修正明顯錯字);仍查無 → 標記「🚫 查無此文獻」。**查不到 ≠ 不存在**(書籍章節、非英文、很新的文章都可能查不到),報告要寫「三個資料庫皆查無」而不是斷言它是捏造的;但若標題含糊、作者查無此人、年份也對不上,可註明「疑似幻覺引用,建議優先人工確認」。環境有網頁搜尋工具時,對疑似幻覺引用值得再做一層交叉確認(搜期刊名+卷期驗證該期刊/該期是否真的存在),能把「查無」升級成更有力的證據。
+1.5 **撤稿檢查(預設必跑)**:所有查到 DOI 的引用,批次跑 `retract`(一次可帶多個 DOI,零 LLM 成本)。🚨 撤稿級記錄 → 報告置頂警示「不可引用」;⚠️ 更正級 → 提醒確認更正內容是否影響引用的論點。引用被撤稿文獻比幻覺引用更難堪,而這是純機器可查的。
 2. **書目正確性**:拿 `verify` 回傳的 Crossref 權威資料(有 DOI 可再 `crossref-doi` 確認)逐欄比對使用者的版本:年份、作者(順序與拼字)、期刊/會議名、卷期頁碼。列出每一處差異。特別注意:引用 arXiv 版但其實已有正式發表版 → 建議改引正式版。引用列表本身已附 DOI 時,可先用 `batch` 一次抓齊 S2 詳情(摘要供支持度判讀)省呼叫;但 **batch/paper 的 not_found 只代表 S2 沒收錄該 ID**(其 DOI 覆蓋不完整,實測連正規期刊文獻都可能查無),存在性仍以 `verify`(Crossref+S2 雙源)為準。
 3. **內容支持度**:回到文章,找出引用該文獻的句子,對照 `verify`/`paper` 回傳的摘要判斷:
    - ✅ 支持:摘要明確涵蓋該論點
