@@ -366,6 +366,54 @@ def test_integrity_parsing():
 
 
 
+
+def test_derivative_items():
+    """XF-*（跨領域 fresh session 實測發現）：期刊的書評／讀者投書／社論會原字照抄
+    原著標題，Crossref 一律標成 journal-article。人文 4 本專書有 2 本、醫學 2 筆
+    有 2 筆撞到——使用者一筆正確的引用會被「訂正」成書評的期刊名與卷期頁。"""
+    review = {"title": "The Making of the English Working Class", "year": 1963,
+              "authors": ["H. McQueen", "E. P. Thompson"], "doi": "10.2307/27507914",
+              "container": "Labour History", "type": "journal-article", "page": "75"}
+    c = dict(review)
+    c["match"] = la.score_candidate(c, review["title"], ["Thompson"], 1963)
+    v, b = la.decide_verdict([c], year_supplied=True, authors_supplied=True,
+                             query_authors=["Thompson"])
+    risk = (b or {}).get("derivative_item_risk") or []
+    check("XF-01", "同年出版的書評條目不得判 found（年份閘門攔不到時仍要擋）",
+          v != "found" and risk, f"verdict={v} risk={risk}")
+    check("XF-02", "單頁與「第一作者非查詢者」兩個訊號都要偵測到",
+          any("頁" in r for r in risk) and any("第一作者" in r for r in risk), f"risk={risk}")
+
+    normal = {"title": "Deep Residual Learning", "year": 2016, "doi": "10.1/x",
+              "authors": ["Kaiming He", "Xiangyu Zhang"],
+              "type": "proceedings-article", "page": "770-778"}
+    c2 = dict(normal)
+    c2["match"] = la.score_candidate(c2, normal["title"], ["He"], 2016)
+    v2, b2 = la.decide_verdict([c2], year_supplied=True, authors_supplied=True,
+                               query_authors=["He"])
+    check("XF-03", "正常長篇論文不得被誤標為衍生條目",
+          v2 == "found" and not (b2 or {}).get("derivative_item_risk"),
+          f"verdict={v2} risk={(b2 or {}).get('derivative_item_risk')}")
+
+
+def test_doi_variants_and_s2_entities():
+    """XF-04/05：先前的兩處修正都太窄，各留了一個沒修的兄弟。"""
+    check("XF-04", "same_work 認得 APA 舊刊的雙斜線 DOI（同一篇的兩種寫法）",
+          la.same_work({"doi": "10.1037//0003-066x.55.1.68"},
+                       {"doi": "10.1037/0003-066X.55.1.68"}) is True)
+    check("XF-04b", "same_work 認得帶 doi.org 前綴的寫法",
+          la.same_work({"doi": "https://doi.org/10.1/A"}, {"doi": "10.1/a"}) is True)
+    check("XF-04c", "不同 DOI 仍判為不同作品（修正未過度寬鬆）",
+          la.same_work({"doi": "10.1/a"}, {"doi": "10.1/b"}) is False)
+
+    n = la.norm_s2({"title": "A &amp; B", "venue": "Group Processes &amp; Intergroup Relations",
+                    "externalIds": {}, "authors": [{"name": "Smith &amp; Co"}],
+                    "abstract": "x &amp; y"})
+    check("XF-05", "S2 路徑也要解 HTML entity（先前只修 Crossref，是過度宣稱）",
+          "&amp;" not in (n["title"] + (n["venue"] or "") + str(n["authors"]) + (n["abstract"] or "")),
+          f"title={n['title']!r} venue={n['venue']!r} authors={n['authors']}")
+
+
 def test_empty_author_candidate():
     """MED-*（醫學 fresh session 實測發現）：候選文獻的作者欄為空時，author_overlap
     回 None，與「使用者沒給作者」無法區分，於是繞過最強的假陽性守門。
@@ -557,7 +605,8 @@ def main():
     ap.add_argument("-k", "--filter", default="")
     args = ap.parse_args()
 
-    suites = [test_empty_author_candidate, test_single_source_degradation,
+    suites = [test_derivative_items, test_doi_variants_and_s2_entities,
+              test_empty_author_candidate, test_single_source_degradation,
               test_vancouver_and_list_guard, test_retraction_fallback,
               test_title_similarity, test_author_overlap, test_identity_gate,
               test_crash_paths, test_absence_semantics, test_integrity_parsing,

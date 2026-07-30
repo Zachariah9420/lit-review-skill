@@ -100,7 +100,7 @@
 
 ## 上游資料的 HTML entity
 
-Crossref 的期刊名／標題／出版社常帶 `&amp;`（如 `Soldering &amp; Surface Mount Technology`）。原樣傳遞會寫進 RIS，使用者匯入 EndNote 後看到字面的 `&amp;`。`norm_crossref` 與 `export --doi` 都已 `html.unescape`；新增任何輸出書目欄位的路徑時記得比照（迴歸案例 NS-04 守著）。
+Crossref **與 Semantic Scholar** 的期刊名／標題／出版社都常帶 `&amp;`（如 `Soldering &amp; Surface Mount Technology`）。原樣傳遞會寫進 RIS，使用者匯入 EndNote 後看到字面的 `&amp;`。`norm_crossref`、`norm_s2` 與 `export --doi` 都已 `html.unescape`（先前只做了 Crossref 路徑，S2 那條漏掉——`&amp;` 會流到 export-xml 被二次逸出。這是「修一半卻宣稱修好」的教訓）；新增任何輸出書目欄位的路徑時記得比照（迴歸案例 NS-04 守著）。
 
 ## 書籍類文獻的驗證盲點
 

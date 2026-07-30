@@ -115,6 +115,12 @@ def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, d
 
 # ---------- Semantic Scholar ----------
 
+def _unesc(v):
+    """解 HTML entity：Crossref 的期刊名常帶 &amp;（如 Soldering &amp; Surface Mount
+    Technology），原樣傳遞會寫進 RIS，使用者匯入 EndNote 後期刊名字面帶 &amp;。"""
+    return html.unescape(v) if isinstance(v, str) else v
+
+
 def s2_headers():
     key = os.environ.get("S2_API_KEY")
     return {"x-api-key": key, "User-Agent": "lit-review-skill/1.0"} if key else {"User-Agent": "lit-review-skill/1.0"}
@@ -127,20 +133,23 @@ def s2_interval():
 def norm_s2(p):
     # 摘要不在取得層截斷：token 控制由 brief/pick 漏斗負責，截斷會切掉
     # Results/Conclusion，對 counter(零結果證據)與因果判讀特別危險
+    # S2 的書目欄位同樣帶 HTML entity（如 Group Processes &amp; Intergroup Relations）。
+    # 先前只在 Crossref 路徑解碼，S2 這條漏掉：&amp; 會一路流到 export-xml 被二次
+    # 逸出，匯入 EndNote 後期刊名字面顯示 &amp;。
     ext = p.get("externalIds") or {}
     abstract = p.get("abstract")
     return {
         "source": "semanticscholar",
         "paperId": p.get("paperId"),
-        "title": p.get("title"),
+        "title": _unesc(p.get("title")),
         "year": p.get("year"),
-        "authors": [a.get("name") for a in (p.get("authors") or [])],
-        "venue": p.get("venue") or None,
+        "authors": [_unesc(a.get("name")) for a in (p.get("authors") or [])],
+        "venue": _unesc(p.get("venue")) or None,
         "doi": ext.get("DOI"),
         "arxiv": ext.get("ArXiv"),
         "citationCount": p.get("citationCount"),
         "openAccessPdf": (p.get("openAccessPdf") or {}).get("url"),
-        "abstract": abstract,
+        "abstract": _unesc(abstract),
         "matchScore": p.get("matchScore"),
     }
 
@@ -249,12 +258,6 @@ def crossref_headers():
     mailto = os.environ.get("CROSSREF_MAILTO")
     ua = "lit-review-skill/1.0" + (f" (mailto:{mailto})" if mailto else "")
     return {"User-Agent": ua}
-
-
-def _unesc(v):
-    """解 HTML entity：Crossref 的期刊名常帶 &amp;（如 Soldering &amp; Surface Mount
-    Technology），原樣傳遞會寫進 RIS，使用者匯入 EndNote 後期刊名字面帶 &amp;。"""
-    return html.unescape(v) if isinstance(v, str) else v
 
 
 def norm_crossref(it):
@@ -882,6 +885,36 @@ def rank_candidates(candidates):
                   reverse=True)
 
 
+def derivative_signals(c, query_authors=None):
+    """偵測「同標題衍生條目」：書評、讀者投書、社論、勘誤等。
+
+    這是跨領域測試中最嚴重的假陽性來源：期刊的 correspondence／book review 會
+    原字照抄原著標題，Crossref 一律標成 journal-article，於是使用者一筆正確的
+    專書或原始論文引用，會被「訂正」成書評的期刊名與卷期頁。判別所需的欄位
+    Crossref 本來就有回傳（type / page / container / authors），先前完全沒用。
+
+    回傳理由字串清單（空清單代表沒有可疑訊號）。
+    """
+    out = []
+    page = (c.get("page") or "").strip()
+    m = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", page)
+    span = (int(m.group(2)) - int(m.group(1)) + 1) if m else (1 if page.isdigit() else None)
+    if span is not None and span <= 3:
+        out.append(f"候選僅 {span} 頁（{page}）——書評、讀者投書、社論等衍生條目的典型長度")
+    t = (c.get("type") or "").lower()
+    if t in ("book-review", "peer-review", "component"):
+        out.append(f"Crossref 類型為 {t}")
+    # 書評的作者欄常同時含書評人與原著作者：使用者給的作者有中，但候選第一位不是他
+    if query_authors and (c.get("authors") or []):
+        first = (c["authors"][0] or "")
+        qs = {a.split(",")[0].strip().lower() if "," in a else a.split()[-1].lower()
+              for a in query_authors if a and a.strip()}
+        if qs and not any(q in first.lower() for q in qs) and                 author_overlap(list(query_authors), c["authors"]) == 1.0:
+            out.append(f"使用者提供的作者出現在候選中，但第一作者是他人（{first}）"
+                       "——書評／評論條目的典型樣態")
+    return out
+
+
 def same_work(a, b):
     """兩筆候選是否為同一篇論文(只是來自不同資料庫)。
 
@@ -889,14 +922,22 @@ def same_work(a, b):
     歧義檢查會把「兩個來源互相印證」(最強的證據)誤判成「配對有歧義」(疑點)——
     一筆完全正確的引用因此被降級,而且降級理由是錯的。
     """
-    da, db = (a.get("doi") or "").lower(), (b.get("doi") or "").lower()
+    def norm_doi(d):
+        # APA 舊刊等來源會出現 10.1037//xxx 這種雙斜線寫法，Crossref 兩種形式並存。
+        # 只做 .lower() 會把同一篇的兩種寫法當成不同文獻，於是「同一作品的再版」
+        # 被誤報成「另有不同文獻造成歧義」——降級理由本身是假的。
+        d = re.sub(r"^https?://(dx\.)?doi\.org/", "", (d or "").strip().lower())
+        return re.sub(r"/{2,}", "/", d)
+
+    da, db = norm_doi(a.get("doi")), norm_doi(b.get("doi"))
     if da and db:
         return da == db
     # 無 DOI 時退而求其次:標題幾乎相同且年份相符
     return title_sim(a.get("title"), b.get("title")) >= 0.95 and a.get("year") == b.get("year")
 
 
-def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False):
+def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False,
+                   query_authors=None):
     """雙路徑 identity gate：回 (verdict, identity_basis)。純函式，無 I/O。
 
     路徑一(標題主導)title_sim ≥ .93；路徑二(作者主導)title_sim ≥ .80 且
@@ -928,6 +969,11 @@ def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False):
         reasons.append("候選無作者資料，無法用使用者提供的作者佐證")
     if year_supplied and yd is None:
         reasons.append("候選無年份資料，無法用年份佐證")
+    deriv = derivative_signals(candidates[0], query_authors)
+    if deriv:
+        # 不直接否決（真的有極短篇正式論文），但不得以 found 蓋章放行
+        reasons.extend(deriv)
+        basis["derivative_item_risk"] = deriv
     # 歧義只在「第二名是另一篇論文」時成立；同一篇的不同來源要略過
     rival = next((c for c in candidates[1:] if not same_work(candidates[0], c)), None)
     if rival is not None:
@@ -1007,7 +1053,8 @@ def verify_one(title, authors, year):
 
     result["candidates"] = rank_candidates(result["candidates"])
     verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(year),
-                                    authors_supplied=bool(authors))
+                                    authors_supplied=bool(authors),
+                                    query_authors=authors)
     if basis:
         result["identity_basis"] = basis
     provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
