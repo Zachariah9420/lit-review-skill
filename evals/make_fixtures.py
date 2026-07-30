@@ -32,7 +32,7 @@ w("two_works.json", json.dumps({"results": [
 ]}, ensure_ascii=False, indent=1))
 
 # --- cite_integrity fixtures ---
-w("apa_style.md", "# Draft\n\n研究顯示此現象存在 (Smith, 2020),後續亦有支持 "
+w("apa_style.md", "# Draft\n\n研究顯示此現象存在 (Smith, 2020)，後續亦有支持 "
                   "(Lee et al., 2019)。\n\n## References\n\n"
                   "Smith, J. (2020). A title. Journal of Things.\n"
                   "Lee, K., et al. (2019). Another title. Other Journal.\n")
@@ -50,7 +50,7 @@ w("overcite.md", "# Draft\n\n引用 [1] [2] 以及不存在的 [100]。\n\n## Re
                  + "".join(f"[{i}] Author {i}.\n" for i in range(1, 11)))
 w("fake.docx", "this is plain text pretending to be a docx\n")
 
-# --- 真 docx:內含 XML 字元參照(Word 就是這樣寫 en-dash 與引號的)---
+# --- 真 docx：內含 XML 字元參照(Word 就是這樣寫 en-dash 與引號的)---
 DOC_XML = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
            '<w:body>'

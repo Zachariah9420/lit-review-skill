@@ -1,6 +1,6 @@
 # Draft
 
-研究顯示此現象存在 (Smith, 2020),後續亦有支持 (Lee et al., 2019)。
+研究顯示此現象存在 (Smith, 2020)，後續亦有支持 (Lee et al., 2019)。
 
 ## References
 

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""迴歸測試:凍結壓力測試與獨立審查找到的缺陷,確保修正不會被未來的改動弄壞。
+"""迴歸測試：凍結壓力測試與獨立審查找到的缺陷，確保修正不會被未來的改動弄壞。
 
-執行:python evals/test_regression.py           (全跑)
+執行：python evals/test_regression.py           (全跑)
       python evals/test_regression.py -v        (逐案顯示)
       python evals/test_regression.py -k title  (只跑名稱含 title 的案例)
 
-原則:**不打任何 API**。純函式直接呼叫,CLI 案例只用本地 fixture 檔——所以
+原則：**不打任何 API**。純函式直接呼叫，CLI 案例只用本地 fixture 檔——所以
 可以秒級跑完、可在 CI 跑、不受 429 影響。需要網路的驗證屬 live smoke test,
 不在本檔範圍(見 evals/README.md)。
 
-每個案例都對應一個真實找到的缺陷,case id 前綴:
-  TS-*  壓力測試(黑箱,6 agents / 38 案例,2026-07-30)
+每個案例都對應一個真實找到的缺陷，case id 前綴：
+  TS-*  壓力測試(黑箱，6 agents / 38 案例，2026-07-30)
   CX-*  Codex 獨立原始碼審查(24 findings,2026-07-30)
   DR-*  設計文件 review v2 的 Phase 0 項目
 """
@@ -19,6 +19,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -49,7 +50,7 @@ def check(case_id, desc, ok, detail=""):
 
 
 def run_cli(script, *args, stdin_json=None):
-    """跑 CLI,回 (exit_code, stdout, stderr)。"""
+    """跑 CLI，回 (exit_code, stdout, stderr)。"""
     p = subprocess.run([PY, os.path.join(SKILL, "scripts", script), *[str(a) for a in args]],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=60)
@@ -65,11 +66,11 @@ def fixture(name):
 # ─────────────────────────────────────────────────────────────
 
 def test_title_similarity():
-    # CX-01:混語標題塌縮——刪掉 CJK 後只剩共同的英文副標,兩篇無關論文 sim=1.0
-    s = la.title_sim("深度學習:A Study", "量子物理:A Study")
+    # CX-01：混語標題塌縮——刪掉 CJK 後只剩共同的英文副標，兩篇無關論文 sim=1.0
+    s = la.title_sim("深度學習：A Study", "量子物理：A Study")
     check("CX-01", "混語標題不得因 CJK 被刪而塌縮成相同", s < 0.8, f"title_sim={s}")
 
-    # TS-F11:純中文/emoji 標題正規化後為空,空對空 ratio=1.0 → 任意配任意
+    # TS-F11：純中文/emoji 標題正規化後為空，空對空 ratio=1.0 → 任意配任意
     check("TS-F11a", "純符號標題相似度為 0(空對空不是匹配)",
           la.title_sim("🤖🔥", "★☆") == 0.0, f"got {la.title_sim('🤖🔥', '★☆')}")
     s = la.title_sim("智慧型維修決策支援系統之研究", "設備維修管理智能決策支持系統")
@@ -77,7 +78,7 @@ def test_title_similarity():
     check("TS-F11c", "相同的純中文標題仍應為 1.0",
           la.title_sim("智慧型維修決策支援系統", "智慧型維修決策支援系統") == 1.0)
 
-    # TS-C3:刪除符號會讓 "Need:A" 黏成 "needa" 而扭曲相似度 → 應以空格取代
+    # TS-C3：刪除符號會讓 "Need:A" 黏成 "needa" 而扭曲相似度 → 應以空格取代
     check("TS-C3", "符號以空格取代而非刪除(避免單字黏合)",
           la.norm_title("Need:A Survey") == "need a survey",
           repr(la.norm_title("Need:A Survey")))
@@ -88,13 +89,13 @@ def test_title_similarity():
     check("REG-02", "完全不同的英文標題分數低",
           la.title_sim("Attention Is All You Need", "Deep Residual Learning") < 0.5)
 
-    # has_latin:判斷「能不能用英文索引比對」的閘門
+    # has_latin：判斷「能不能用英文索引比對」的閘門
     check("CX-02", "has_latin 正確區分中文與英文標題",
           not la.has_latin("智慧型維修") and la.has_latin("BERT: Pre-training"))
 
 
 def test_author_overlap():
-    # 分母必須是「使用者提供的作者數」,不是候選作者總數(設計文件 §4.1.2)
+    # 分母必須是「使用者提供的作者數」，不是候選作者總數(設計文件 §4.1.2)
     ov = la.author_overlap(["Vaswani"], ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar",
                                          "Jakob Uszkoreit", "Llion Jones", "Aidan Gomez",
                                          "Lukasz Kaiser", "Illia Polosukhin"])
@@ -106,13 +107,13 @@ def test_author_overlap():
 
 
 # ─────────────────────────────────────────────────────────────
-# 2. verify 的 identity gate(用凍結候選,不打 API)
+# 2. verify 的 identity gate(用凍結候選，不打 API)
 # ─────────────────────────────────────────────────────────────
 
 def judge(candidates, *, title, authors=(), year=None):
-    """用**生產程式碼**的 rank_candidates + decide_verdict 判定,不重新實作。
+    """用**生產程式碼**的 rank_candidates + decide_verdict 判定，不重新實作。
 
-    先前版本在測試裡自己抄了一份排序/判定邏輯,結果動了生產程式碼測試也不會失敗
+    先前版本在測試裡自己抄了一份排序/判定邏輯，結果動了生產程式碼測試也不會失敗
     (突變測試抓到這件事)。測試必須呼叫真正會被使用者跑到的那份程式碼。
     """
     scored = []
@@ -131,7 +132,7 @@ def test_identity_gate():
     other = {"title": "Is Attention All You Need?", "year": 2025,
              "authors": ["P. Mineault"], "doi": "10.x/other"}
 
-    # TS-C1(壓測證實的已知缺口):同標題+作者全錯,舊版判 found
+    # TS-C1(壓測證實的已知缺口)：同標題+作者全錯，舊版判 found
     ranked, verdict, basis = judge([real], title="Attention Is All You Need",
                                    authors=["Wang, X.", "Chen, Y."], year=2017)
     check("TS-C1", "同標題但作者無一重疊 → 不得判 found",
@@ -139,8 +140,8 @@ def test_identity_gate():
           f"verdict={verdict} sim={ranked[0]['match']['title_sim']} "
           f"reasons={(basis or {}).get('downgrade_reasons')}")
 
-    # TS-C2:標題與年份都平手時,必須由 author_overlap 決勝。錯的候選刻意放在
-    # 輸入的第一位——若排序鍵少了 author_overlap,穩定排序會讓它留在第一位而失敗。
+    # TS-C2：標題與年份都平手時，必須由 author_overlap 決勝。錯的候選刻意放在
+    # 輸入的第一位——若排序鍵少了 author_overlap，穩定排序會讓它留在第一位而失敗。
     wrong = {"title": "Attention Is All You", "year": 2017, "authors": ["X. Unknown"],
              "doi": "10.x/wrong"}
     right = {"title": "Attention Is All You", "year": 2017,
@@ -151,14 +152,14 @@ def test_identity_gate():
           ranked[0]["doi"] == "10.x/right",
           f"top={ranked[0]['doi']} ov={ranked[0]['match'].get('author_overlap')}")
 
-    # TS-C2b:標題與作者都平手時,由年份接近度決勝
+    # TS-C2b：標題與作者都平手時，由年份接近度決勝
     old = {"title": "BERT", "year": 2010, "authors": ["J. Devlin"], "doi": "10.x/old"}
     new = {"title": "BERT", "year": 2019, "authors": ["J. Devlin"], "doi": "10.x/new"}
     ranked, _, _ = judge([old, new], title="BERT", authors=["Devlin"], year=2019)
     check("TS-C2b", "標題與作者平手時由年份接近度決勝",
           ranked[0]["doi"] == "10.x/new", f"top={ranked[0]['doi']}")
 
-    # CX-03:候選無年份時,year_diff 缺值不得被當成 0 而蒙混通過年份閘門
+    # CX-03：候選無年份時，year_diff 缺值不得被當成 0 而蒙混通過年份閘門
     noyear = {"title": "Editorial", "year": None, "authors": ["Bob Jones"]}
     ranked, verdict, basis = judge([noyear], title="Editorial",
                                    authors=["Alice Smith"], year=2024)
@@ -180,7 +181,7 @@ def test_identity_gate():
               "authors": ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"]}
     _, verdict, basis = judge([broken], title="Attention Is All You",
                              authors=["Vaswani", "Shazeer"], year=2017)
-    check("DR-05", "標題壞掉但作者強重疊 → 走 author path,不被判 not_found",
+    check("DR-05", "標題壞掉但作者強重疊 → 走 author path，不被判 not_found",
           verdict != "not_found" and (basis or {}).get("match_path") in ("author", "title"),
           f"verdict={verdict} path={(basis or {}).get('match_path')}")
 
@@ -190,7 +191,7 @@ def test_identity_gate():
                           title="Attention Is All You Need", authors=["Vaswani"], year=2017)
     check("REG-09", "無關候選判 not_found", verdict == "not_found", f"verdict={verdict}")
 
-    # 年份容忍度:±1 可,±3 不可
+    # 年份容忍度：±1 可，±3 不可
     y1 = {"title": "BERT", "year": 2019, "authors": ["J. Devlin"]}
     check("REG-03", "線上先行年差 1 年視為可接受",
           la.score_candidate(y1, "BERT", ["Devlin"], 2018)["year_diff"] == 1)
@@ -199,7 +200,7 @@ def test_identity_gate():
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 崩潰路徑:任何輸入都必須是結構化錯誤,不得 traceback
+# 3. 崩潰路徑：任何輸入都必須是結構化錯誤，不得 traceback
 # ─────────────────────────────────────────────────────────────
 
 def assert_no_traceback(case_id, desc, script, *args):
@@ -216,33 +217,33 @@ def assert_no_traceback(case_id, desc, script, *args):
 
 
 def test_crash_paths():
-    # TS-F08 / CX-04:非 JSON 檔
+    # TS-F08 / CX-04：非 JSON 檔
     assert_no_traceback("TS-F08", "brief 遇非 JSON 檔給結構化錯誤",
                         "lit_api.py", "brief", fixture("not_json.txt"))
     # CX-05:JSON 根層是陣列(pick 的輸出)——舊版 d.get() 崩潰
     code, out, _ = run_cli("lit_api.py", "brief", fixture("list_root.json"))
     check("CX-05", "brief 接受陣列根層的 JSON(pick 輸出)不崩潰",
           code == 0 and "Traceback" not in out, f"exit={code}")
-    # CX-06:單篇 paper 輸出餵給 export-xml,舊版靜默產出空 XML
+    # CX-06：單篇 paper 輸出餵給 export-xml，舊版靜默產出空 XML
     code, out, _ = run_cli("lit_api.py", "export-xml", fixture("single_work.json"))
     check("CX-06", "單篇文獻物件可匯出(不靜默產空 XML)",
           code == 0 and "<record>" in out, f"exit={code} out={out[:70]!r}")
     # CX-07:inline JSON 不合法
     assert_no_traceback("CX-07", "export-xml 對不合法 inline JSON 給結構化錯誤",
                         "lit_api.py", "export-xml", "[")
-    # CX-08:陣列內含 null
+    # CX-08：陣列內含 null
     assert_no_traceback("CX-08", "export-xml 對 [null] 不崩潰且拒絕產空檔",
                         "lit_api.py", "export-xml", "[null]")
-    # TS-F06:越界 index 必須回報,不得靜默回 []
+    # TS-F06：越界 index 必須回報，不得靜默回 []
     assert_no_traceback("TS-F06", "pick 越界 index 回報錯誤而非靜默空集",
                         "lit_api.py", "pick", fixture("two_works.json"), "99")
-    # TS-F01:空標題應在打 API 前擋下
+    # TS-F01：空標題應在打 API 前擋下
     assert_no_traceback("TS-F01", "verify 空標題在發 API 前擋下",
                         "lit_api.py", "verify", "--title", "   ")
-    # TS-T6:假 docx
+    # TS-T6：假 docx
     assert_no_traceback("TS-T6", "cite_integrity 對假 docx 給結構化錯誤",
                         "cite_integrity.py", fixture("fake.docx"), "--json")
-    # CX-09:不存在的 docx(舊版 FileNotFoundError traceback)
+    # CX-09：不存在的 docx(舊版 FileNotFoundError traceback)
     assert_no_traceback("CX-09", "cite_integrity 對不存在的 docx 給結構化錯誤",
                         "cite_integrity.py", fixture("no_such_file.docx"), "--json")
 
@@ -252,7 +253,7 @@ def test_crash_paths():
 # ─────────────────────────────────────────────────────────────
 
 def test_absence_semantics():
-    # DR-04:非拉丁標題不得硬配,要明確標 unsupported 並給指引
+    # DR-04：非拉丁標題不得硬配，要明確標 unsupported 並給指引
     code, out, _ = run_cli("lit_api.py", "verify", "--title", "智慧型維修決策支援系統之研究")
     d = json.loads(out) if out.strip().startswith("{") else {}
     check("DR-04", "純中文標題回 unsupported_title 並附人工查核指引",
@@ -266,8 +267,8 @@ def test_absence_semantics():
           d.get("error") == "UNSUPPORTED_IDENTIFIER" and code != 0,
           f"exit={code} error={d.get('error')}")
 
-    # CX-11:DOI 判定必須要求 10.x/ 形狀,含斜線的正常標題不得被誤送 DOI 端點
-    #（純字串檢查,不打 API:驗證 regex 本身)
+    # CX-11:DOI 判定必須要求 10.x/ 形狀，含斜線的正常標題不得被誤送 DOI 端點
+    #（純字串檢查，不打 API：驗證 regex 本身)
     import re
     is_doi = lambda s: bool(s.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", s))
     check("CX-11", "含斜線的標題不被誤判為 DOI",
@@ -294,12 +295,12 @@ def test_integrity_parsing():
           d.get("numeric_citations_found") is False and "unsupported_style_note" in d
           and code != 0, f"exit={code} keys={list(d)[:6]}")
 
-    # CX-12:大範圍引用不得靜默丟棄
+    # CX-12：大範圍引用不得靜默丟棄
     code, d = integrity_json("big_range.md")
     check("CX-12", "[1-52] 這類大範圍引用正確展開(不靜默丟棄)",
           d.get("cited_count") == 52, f"cited_count={d.get('cited_count')}")
 
-    # CX-13:參考文獻標題須自成一行,不得被條目內的 References 一詞騙走切分點
+    # CX-13：參考文獻標題須自成一行，不得被條目內的 References 一詞騙走切分點
     code, d = integrity_json("heading_in_title.md")
     check("CX-13", "條目標題內的 References 一詞不奪走切分點",
           d.get("listed_count") == 2 and d.get("refs_heading_match") == "strict",
@@ -331,6 +332,31 @@ def test_integrity_parsing():
 # 6. 輸出格式的健壯性
 # ─────────────────────────────────────────────────────────────
 
+def test_chinese_punctuation():
+    """使用者可見的中文輸出必須用全形標點——半形混在中文裡是台灣學術寫作的格式錯誤，
+    而使用者會把報告內容直接複製進論文。"""
+    half = re.compile(r'[一-鿿][,:;!?]|[,:;][一-鿿]')
+    for fname in ("lit_api.py", "cite_integrity.py"):
+        path = os.path.join(SKILL, "scripts", fname)
+        src = open(path, encoding="utf-8").read()
+        # 只檢查字串常值(那才是輸出給使用者的)，註解與程式碼不算
+        bad = []
+        for m in re.finditer(r'"([^"\n]*[一-鿿][^"\n]*)"', src):
+            if half.search(m.group(1)):
+                bad.append(m.group(1)[:40])
+        check(f"PUNCT-{fname[:4]}", f"{fname} 的中文輸出字串使用全形標點",
+              not bad, f"{len(bad)} 條含半形：{bad[:3]}")
+
+
+def test_fulltext_boundary():
+    """fulltext 不得暗示可繞過付費牆，且查無免費版時必須給機構取得途徑。"""
+    src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
+    fn = src[src.index("def cmd_fulltext"):src.index("def cmd_retract")]
+    check("FT-01", "fulltext 明確聲明不繞過付費牆", "不繞過付費牆" in fn)
+    check("FT-02", "查無免費版時提供機構取得途徑", "how_to_get" in fn and "圖書館" in fn)
+    check("FT-03", "Unpaywall 與備援來源不一致時明說差異", "source_discrepancy" in fn)
+
+
 def test_output_hardening():
     # CX-15:RIS 欄位值內的換行會截斷記錄 → 必須清理
     poison = [{"title": "Legit Title\nER  - \nTY  - JOUR\nTI  - Injected",
@@ -361,14 +387,14 @@ def main():
 
     suites = [test_title_similarity, test_author_overlap, test_identity_gate,
               test_crash_paths, test_absence_semantics, test_integrity_parsing,
-              test_output_hardening]
+              test_chinese_punctuation, test_fulltext_boundary, test_output_hardening]
     for s in suites:
         if args.filter and args.filter.lower() not in s.__name__.lower():
             continue
         try:
             s()
-        except Exception as e:  # 測試本身壞掉也要如實顯示,不可靜默跳過
-            check(s.__name__, f"測試套件自身異常:{type(e).__name__}", False, str(e)[:200])
+        except Exception as e:  # 測試本身壞掉也要如實顯示，不可靜默跳過
+            check(s.__name__, f"測試套件自身異常：{type(e).__name__}", False, str(e)[:200])
 
     shown = [r for r in RESULTS if not args.filter or args.filter.lower() in r["id"].lower()
              or args.filter.lower() in r["desc"].lower()] if args.filter else RESULTS

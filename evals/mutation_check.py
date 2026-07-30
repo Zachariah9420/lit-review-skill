@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""突變測試:把已修的缺陷塞回去,確認迴歸測試真的抓得到。
+"""突變測試：把已修的缺陷塞回去，確認迴歸測試真的抓得到。
 
-一個永遠全綠的測試套件可能只是沒有偵測力。這支腳本反向驗證:
-每個突變都**必須**讓至少一個指定案例失敗,否則該防護等於沒有測試保護。
+一個永遠全綠的測試套件可能只是沒有偵測力。這支腳本反向驗證：
+每個突變都**必須**讓至少一個指定案例失敗，否則該防護等於沒有測試保護。
 
-執行:python evals/mutation_check.py
-任何情況下都會復原原始檔(finally),但仍建議在乾淨的 git 工作樹上跑。
+執行：python evals/mutation_check.py
+任何情況下都會復原原始檔(finally)，但仍建議在乾淨的 git 工作樹上跑。
 """
 import os
 import shutil
@@ -18,7 +18,7 @@ SKILL = os.path.dirname(BASE)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# (描述, 目標檔, 原始片段, 突變片段, 必須因此失敗的案例)
+# (描述， 目標檔， 原始片段， 突變片段， 必須因此失敗的案例)
 MUTATIONS = [
     ("刪除 CJK 字元 → 混語標題塌縮", "lit_api.py",
      'return re.sub(r"\\s+", " ", re.sub(rf"[^a-z0-9{CJK}]+", " ", (t or "").lower())).strip()',
@@ -31,7 +31,7 @@ MUTATIONS = [
      '    if isinstance(d, list):          # pick 的輸出本身就是陣列\n        return {}, d\n', "",
      ["CX-05"]),
     ("year_diff 缺值當成 0 → 無年份候選蒙混過關", "lit_api.py",
-     'yd = m.get("year_diff")           # None = 任一方無年份,「未知」不等於 0',
+     'yd = m.get("year_diff")           # None = 任一方無年份，「未知」不等於 0',
      'yd = m.get("year_diff") or 0',
      ["CX-03"]),
     ("排序只看 title_sim → 真論文被無關候選壓過", "lit_api.py",
@@ -69,7 +69,7 @@ def main():
     if baseline_fails:
         print(f"⚠️ 未突變時已有失敗案例 {sorted(baseline_fails)} —— 先修好再跑突變測試")
         sys.exit(1)
-    print("基線:全綠,開始突變\n")
+    print("基線：全綠，開始突變\n")
 
     weak = []
     for desc, fname, orig, mutant, expect in MUTATIONS:
@@ -79,25 +79,25 @@ def main():
         try:
             src = open(bak, encoding="utf-8").read()
             if orig not in src:
-                print(f"⚠️ 跳過(找不到目標片段,程式碼已改動?):{desc}")
+                print(f"⚠️ 跳過(找不到目標片段，程式碼已改動？):{desc}")
                 weak.append((desc, "目標片段不存在"))
                 continue
             open(target, "w", encoding="utf-8").write(src.replace(orig, mutant, 1))
             fails, _ = run_suite()
             caught = sorted(fails & set(expect))
             if caught:
-                print(f"✅ 抓到 | {desc}\n   失敗案例:{caught}")
+                print(f"✅ 抓到 | {desc}\n   失敗案例：{caught}")
             else:
-                print(f"❌ 漏抓 | {desc}\n   預期 {expect} 應失敗,實際失敗:{sorted(fails) or '無'}")
+                print(f"❌ 漏抓 | {desc}\n   預期 {expect} 應失敗，實際失敗：{sorted(fails) or '無'}")
                 weak.append((desc, f"預期 {expect} 未失敗"))
         finally:
             shutil.copy(bak, target)
             os.unlink(bak)
 
     after, _ = run_suite()
-    print(f"\n復原檢查:{'全綠' if not after else f'仍有失敗 {sorted(after)}(復原失敗!)'}")
+    print(f"\n復原檢查：{'全綠' if not after else f'仍有失敗 {sorted(after)}(復原失敗！)'}")
     if weak or after:
-        print(f"\n{len(weak)} 個防護缺乏測試偵測力:")
+        print(f"\n{len(weak)} 個防護缺乏測試偵測力：")
         for d, why in weak:
             print(f"  - {d}({why})")
         sys.exit(1)

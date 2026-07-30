@@ -50,6 +50,24 @@ flowchart TB
 
 Three honesty mechanisms run through every path: bibliographic fields come only from API responses (never from LLM memory), every verdict carries its evidence level, and generated output is audited by a fresh-context skeptic before delivery.
 
+## What this is not
+
+**If you already found a paper and just want its citation string, use the [Google Scholar Button](https://chromewebstore.google.com/detail/google-scholar-button/ldipcbpaocekfooobnbcddclnhejkcpn) (official, by Google) — it is faster and this tool does not compete there.** It also finds full text through your university library, which is the proper licensed route and better than anything this tool can legitimately do.
+
+This tool starts where that ends: with citations you **already have** — from an AI, a co-author, an old draft, or a copy-paste that went wrong.
+
+| Task | Scholar Button | lit-review |
+|---|---|---|
+| Known paper → citation string | ✅ one click | slower, no advantage |
+| Full text via institutional access | ✅ its core strength | out of scope by design |
+| "Does this reference exist?" | — | ✅ cross-checks Crossref + Semantic Scholar |
+| "Is the bibliography correct?" | — | ✅ field-by-field against Crossref |
+| "Does it support *this sentence*?" | — | ✅ reads the abstract, flags overreach |
+| "Was it retracted?" | — | ✅ every DOI, by default |
+| 36 references at once | 36 manual clicks | ✅ one batch run |
+
+Measured, not asserted: Scholar Button results carry no DOI and collapse volume/issue/pages into a truncated string, so they cannot drive bibliographic verification. Conversely, it surfaced a free repository PDF for a paywalled review that Unpaywall reported as closed — `fulltext` recovers the same URL via a fallback source, but the lesson stands: for *getting the paper*, use Scholar Button and your library.
+
 ## What it does
 
 **Mode A — Find literature.** Extracts claims from your draft, searches Semantic Scholar / OpenAlex / arXiv, snowballs through citation networks to find classics keyword search misses, judges candidates by their abstracts (not titles), and exports an EndNote/Zotero-ready `.ris` file.
@@ -88,6 +106,7 @@ Or use explicit commands (same words work in Claude Code as `/lit-review <cmd>` 
 | `counter <claim>` | Deliberately search for null/contrary evidence |
 | `strength <paper+claim>` | Evidence-quality grading (meta-analysis vs. small cross-sectional, at a glance) |
 | `claims <file>` | Claim–evidence ledger: support/oppose counts and strength per claim |
+| `fulltext <DOI>` | Locate legally available full text (Unpaywall + OA fields); tells you the institutional route when there is none |
 | `matrix` `map` `gap` `notes` `integrity` `glossary` `rehearse` `watch` `retract` `versions` `export-xml` | Grad toolkit — see [USAGE.md](USAGE.md) |
 | `deep` / `quick` / `thorough` | Depth & verification-intensity modifiers |
 | `bibtex` / `no-ris` | Reference-file format preference |
