@@ -3,7 +3,7 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 73 frozen cases
+python evals/test_regression.py     # 74 frozen cases
 python evals/mutation_check.py      # 9 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
@@ -54,6 +54,20 @@ python evals/zip_check.py lit-review.zip
 Scans the archive for API keys, personal email addresses, machine-specific absolute
 paths, and stray `.env` / `.git` / `__pycache__` entries. Manual review misses these;
 a regex does not.
+
+## A flaky test is a broken test
+
+PERF-01 once failed while six agents were loading the machine, then passed four
+times in a row. The cause was in the test, not the code: it compared the
+*relative* wait each thread received, but each thread reads the clock
+separately, so scheduling drift under load distorted the comparison. It now
+checks two things that scheduling cannot affect — sequential reservations are
+exactly one interval apart (pure arithmetic), and after N threads the reserved
+slot has advanced by at least (N-1) intervals.
+
+A regression suite that goes red at random teaches people to ignore red. If a
+case fails once and passes on retry, treat the test as the defect until proven
+otherwise.
 
 ## Adding a case
 

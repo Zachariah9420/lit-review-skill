@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SKILL = os.path.dirname(BASE)
@@ -499,34 +500,39 @@ def test_rate_limiter_concurrency():
     """併行時速率限制仍須成立——批次模式的正確性靠這個。
 
     舊版是「讀 _last_call → sleep → 更新」，兩條執行緒會讀到同一個舊值而同時發出
-    請求，等於沒有節流（會被 API 封）。改成在鎖內預約時段後，每條線拿到的
-    發送時刻必須互相間隔至少 min_interval。此測試不打 API，純驗排程邏輯。
+    請求，等於沒有節流（會被 API 封）。改成在鎖內預約時段。此測試不打 API。
+
+    測試設計注意：不可比較各執行緒回傳的「還要等多久」——那是相對於各自呼叫
+    time.time() 的時刻，機器負載高時排程漂移會讓它失真（本測試曾因此偶發失敗，
+    是測試的問題不是程式的問題）。改為驗證兩件與排程無關的事：
+      (a) 單執行緒連續預約的間隔剛好是 min_interval（純算術，確定性）
+      (b) N 條執行緒預約後，_last_call 的最終值必須推進 (N-1)×min_interval
+          ——代表每條線都拿到不重疊的時段，沒有人共用同一個。
     """
     import threading
-    la._last_call.clear()
     INTERVAL, N = 0.05, 12
-    slots, lock = [], threading.Lock()
 
-    def worker():
-        wait = la._reserve_slot("test_bucket", INTERVAL)
-        with lock:
-            slots.append(wait)
+    la._last_call.clear()
+    seq = [la._reserve_slot("seq_bucket", INTERVAL) for _ in range(4)]
+    gaps = [round(b - a, 4) for a, b in zip(seq, seq[1:])]
+    check("PERF-01", "連續預約的時段間隔剛好是 min_interval（純算術，不受負載影響）",
+          all(abs(g - INTERVAL) < 1e-6 for g in gaps), f"間隔={gaps} 期望每個={INTERVAL}")
 
-    ts = [threading.Thread(target=worker) for _ in range(N)]
+    la._last_call.clear()
+    t0 = time.time()
+    ts = [threading.Thread(target=lambda: la._reserve_slot("conc_bucket", INTERVAL))
+          for _ in range(N)]
     for t in ts:
         t.start()
     for t in ts:
         t.join()
-    ordered = sorted(slots)
-    gaps = [round(b - a, 4) for a, b in zip(ordered, ordered[1:])]
-    ok = len(slots) == N and all(g >= INTERVAL - 0.001 for g in gaps)
-    check("PERF-01", "併行預約的發送時段互相間隔 ≥ min_interval（節流不因併行失效）",
-          ok, f"間隔={gaps[:5]}… 期望每個 ≥{INTERVAL}")
-    la._last_call.clear()
+    advanced = la._last_call["conc_bucket"] - t0
+    check("PERF-02", f"{N} 條執行緒各拿到不重疊的時段（節流不因併行失效）",
+          advanced >= (N - 1) * INTERVAL - 1e-6,
+          f"最終時段推進 {advanced:.3f}s，至少須 {(N - 1) * INTERVAL:.3f}s")
 
-    # 單執行緒下第一次呼叫不應被無謂延遲
     la._last_call.clear()
-    check("PERF-02", "首次呼叫無等待（冷啟動不該付節流成本）",
+    check("PERF-02b", "首次呼叫無等待（冷啟動不該付節流成本）",
           la._reserve_slot("fresh_bucket", 1.0) <= 0.001)
     la._last_call.clear()
 
