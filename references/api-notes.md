@@ -63,7 +63,8 @@
 |---|---|---|
 | `found` | title_sim ≥ 0.93 且年差 ≤ 1 | 直接進書目比對 |
 | `similar_found` | title_sim ≥ 0.8 | 人工比對:副標題省略?preprint/正式版?還是真的寫錯? |
-| `not_found` | 其他 | 換詞重查一次;仍無 → 報告寫「三庫皆查無」 |
+| `not_found` | 其他 | 換詞重查一次;仍無 → 照輸出的 `absence_note` 寫(列名實際查過的來源) |
+| `partial_failure` | 候選為空且有來源錯誤 | **查詢未完成 ≠ 查無**——重試,或報告如實寫「來源暫時查詢失敗」 |
 
 - `match.author_overlap`:查詢作者姓氏出現在候選作者中的比例;低於 0.5 且 title_sim 又不高時,幾乎可斷定不是同一篇。
 - `match.year_diff`:1 年差常見(online-first vs 紙本),≥2 年才視為書目錯誤。

@@ -106,10 +106,10 @@ def s2_interval():
 
 
 def norm_s2(p):
+    # 摘要不在取得層截斷:token 控制由 brief/pick 漏斗負責,截斷會切掉
+    # Results/Conclusion,對 counter(零結果證據)與因果判讀特別危險
     ext = p.get("externalIds") or {}
     abstract = p.get("abstract")
-    if abstract and len(abstract) > 2000:
-        abstract = abstract[:2000] + "…[截斷]"
     return {
         "source": "semanticscholar",
         "paperId": p.get("paperId"),
@@ -127,15 +127,14 @@ def norm_s2(p):
 
 
 def deinvert(inv):
-    """OpenAlex 的摘要是倒排索引,還原成文字。"""
+    """OpenAlex 的摘要是倒排索引,還原成文字(不截斷,同 norm_s2 的理由)。"""
     if not inv:
         return None
     pos = {}
     for w, idxs in inv.items():
         for i in idxs:
             pos[i] = w
-    text = " ".join(pos[i] for i in sorted(pos))
-    return text[:2000] + "…[截斷]" if len(text) > 2000 else text
+    return " ".join(pos[i] for i in sorted(pos))
 
 
 def norm_openalex(w):
@@ -677,6 +676,16 @@ def cmd_verify(args):
         verdict = "similar_found"   # 標題相近但可能有出入,需人工/LLM 判讀
     else:
         verdict = "not_found"
+
+    # 「查無」是研究結論,只有查詢真的完成才可用;來源掛掉不得偽裝成查無
+    provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
+    if verdict == "not_found" and provider_errors:
+        verdict = "partial_failure"
+        result["absence_note"] = ("查詢未完整完成(" + ", ".join(provider_errors)
+                                  + " 見上),不可解讀為查無;請稍後重試或人工查證")
+    elif verdict == "not_found":
+        result["absence_note"] = ("實際查核來源(Crossref + Semantic Scholar)皆無合理候選;"
+                                  "書籍章節、非英語文獻、產業論文集常不在這兩個索引中,查無 ≠ 不存在")
     result["verdict_hint"] = verdict
     print(json.dumps(result, ensure_ascii=False, indent=1))
 
