@@ -334,7 +334,12 @@ def cmd_export_xml(args):
     """EndNote XML 匯出:可把查核結果(entry 的 research_notes 欄)與品質紅旗
     一起帶進 EndNote 的 Research Notes。輸入為本工具任何存檔 JSON(或 pick 輸出)。"""
     if args.file.strip().startswith("["):
-        entries = json.loads(args.file)
+        try:
+            entries = json.loads(args.file)
+        except json.JSONDecodeError as e:
+            print(json.dumps({"error": "INVALID_INPUT",
+                              "message": f"inline JSON 不合法:{e}"}, ensure_ascii=False))
+            sys.exit(1)
     else:
         try:
             entries = json.load(open(args.file, encoding="utf-8"))
@@ -342,8 +347,20 @@ def cmd_export_xml(args):
                 _, entries = _load_entries(args.file)
         except (OSError, json.JSONDecodeError):
             _, entries = _load_entries(args.file)
+    bad = [i for i in (args.indices or []) if not 0 <= i < len(entries)]
+    if bad:
+        print(json.dumps({"error": "INVALID_INPUT", "message": f"index 越界:{bad}",
+                          "available_range": f"0..{len(entries) - 1}"}, ensure_ascii=False))
+        sys.exit(1)
     if args.indices:
-        entries = [entries[i] for i in args.indices if 0 <= i < len(entries)]
+        entries = [entries[i] for i in args.indices]
+
+    entries = [e for e in entries if isinstance(e, dict)]   # 濾掉 null/字串等雜項
+    if not entries:
+        print(json.dumps({"error": "INVALID_INPUT",
+                          "message": "沒有可匯出的文獻物件——拒絕產生空的 XML(靜默產空檔會讓引用悄悄消失)"},
+                         ensure_ascii=False))
+        sys.exit(1)
 
     root = ET.Element("xml")
     records = ET.SubElement(root, "records")
@@ -352,7 +369,8 @@ def cmd_export_xml(args):
         el = ET.SubElement(parent, tag)
         st = ET.SubElement(el, "style")
         st.set("face", "normal"); st.set("font", "default"); st.set("size", "100%")
-        st.text = str(text)
+        # 移除 XML 1.0 不允許的控制字元,否則產出「號稱 XML 但無法解析」的檔案
+        st.text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(text))
 
     for e in entries:
         rec = ET.SubElement(records, "record")
@@ -422,8 +440,10 @@ def cmd_versions(args):
                     out["arxiv_record"] = {"title": title, "year": entries[0]["year"]}
             except OSError as e:
                 out["arxiv_error"] = str(e)
-    elif "/" in ident or ident.upper().startswith("DOI:"):
-        doi = ident.replace("DOI:", "")
+    elif ident.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", ident):
+        # 只認 DOI: 前綴(不分大小寫)或真正的 10.xxxx/ 格式——先前「含斜線就當 DOI」
+        # 會把「Risk/Benefit Analysis」這種正常標題誤送 DOI 端點
+        doi = re.sub(r"^doi:", "", ident, flags=re.I)
         try:
             cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(doi, safe="/"),
                                      crossref_headers(), 1.0, "crossref"))
@@ -440,6 +460,14 @@ def cmd_versions(args):
             pass
     else:
         title = ident
+        if not has_latin(ident):
+            print(json.dumps({
+                "query": ident,
+                "error": "UNSUPPORTED_IDENTIFIER",
+                "recommendation": ("輸入無可比對的拉丁字元(中文標題或純符號),且不是 DOI/arXiv 編號:"
+                                  "版本解析僅支援拉丁字母標題與識別碼,請改用 DOI 或 arXiv ID。"),
+            }, ensure_ascii=False, indent=1))
+            sys.exit(1)
 
     if title and not out["published_version"]:
         pubs = []
@@ -458,6 +486,15 @@ def cmd_versions(args):
         p = out["published_version"]
         out["recommendation"] = (f"已有正式發表版({p.get('container') or p.get('type')}, "
                                  f"{p.get('year')},DOI {p.get('doi')}),學術慣例應引正式版")
+        if not out.get("s2_record", {}).get("doi"):
+            out["confidence"] = "medium"
+            out["confidence_note"] = ("版本鏈由標題相似度推定(未經 S2 版本合併訊號佐證):"
+                                      "同名標題的不同論文可能被誤配,請核對作者與年份後再改引")
+    elif out.get("crossref_error") or out.get("s2_error") or out.get("arxiv_error"):
+        out["recommendation"] = ("版本解析未完成——來源查詢失敗(見 *_error 欄位),"
+                                 "這不代表沒有正式發表版;請稍後重試")
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        sys.exit(1)
     elif out["arxiv"]:
         out["recommendation"] = ("Crossref 查無正式發表版(不保證不存在,會議論文集常不註冊 DOI);"
                                  "目前引 arXiv 版合理,投稿前可再查一次")
@@ -501,14 +538,35 @@ def cmd_retract(args):
     out.append({"_note": "Crossref 撤稿覆蓋不完備(尤其非英文期刊):無記錄 ≠ 保證沒事;"
                          "生醫/心理領域高風險引用建議再以 Retraction Watch 網站人工複核"})
     print(json.dumps(out, ensure_ascii=False, indent=1))
+    # 全部查詢失敗時給非零 exit,批次腳本才能靠 exit code 偵測「這輪等於沒查」
+    checked = [r for r in out if "doi" in r]
+    if checked and all(r["status"].startswith("❓") for r in checked):
+        sys.exit(1)
 
 
 def _load_entries(path):
-    d = json.load(open(path, encoding="utf-8"))
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": "INVALID_INPUT", "file": path,
+                          "message": f"檔案不是合法 JSON:{e}"}, ensure_ascii=False))
+        sys.exit(1)
+    if isinstance(d, list):          # pick 的輸出本身就是陣列
+        return {}, d
+    if not isinstance(d, dict):
+        print(json.dumps({"error": "INVALID_INPUT", "file": path,
+                          "message": "JSON 根層必須是物件或陣列"}, ensure_ascii=False))
+        sys.exit(1)
     for key in ("results", "citations", "references", "candidates"):
         if isinstance(d.get(key), list):
             return d, d[key]
-    return d, []
+    # 單篇 paper/crossref-doi 的輸出是單一物件:視為一筆,否則會靜默產生空結果
+    if d.get("title") or d.get("doi"):
+        return d, [d]
+    print(json.dumps({"error": "INVALID_INPUT", "file": path,
+                      "message": "找不到可用的文獻清單(results/citations/references/candidates)"
+                                 ",也不是單篇文獻物件"}, ensure_ascii=False))
+    sys.exit(1)
 
 
 def cmd_brief(args):
@@ -527,8 +585,12 @@ def cmd_brief(args):
 def cmd_pick(args):
     """讀取 brief 選中的那幾筆完整資料(含摘要)。"""
     d, entries = _load_entries(args.file)
-    sel = [entries[i] for i in args.indices if 0 <= i < len(entries)]
-    print(json.dumps(sel, ensure_ascii=False, indent=1))
+    bad = [i for i in args.indices if not 0 <= i < len(entries)]
+    if bad:
+        print(json.dumps({"error": "INVALID_INPUT", "message": f"index 越界:{bad}",
+                          "available_range": f"0..{len(entries) - 1}"}, ensure_ascii=False))
+        sys.exit(1)
+    print(json.dumps([entries[i] for i in args.indices], ensure_ascii=False, indent=1))
 
 
 def cmd_batch(args):
@@ -601,12 +663,28 @@ def cmd_snowball(args):
 
 # ---------- verify ----------
 
+CJK = r"぀-ヿ㐀-䶿一-鿿豈-﫿"
+
+
 def norm_title(t):
-    return re.sub(r"[^a-z0-9 ]", "", (t or "").lower()).strip()
+    # 1) 保留 CJK 字元:刪掉它們會讓「深度學習:A Study」與「量子物理:A Study」
+    #    都塌縮成「a study」而 title_sim=1.0(完全不同的論文被判為同一篇)。
+    # 2) 以空格取代其餘符號(不是刪除):刪除會讓「Need:A」黏成「needa」扭曲相似度。
+    return re.sub(r"\s+", " ", re.sub(rf"[^a-z0-9{CJK}]+", " ", (t or "").lower())).strip()
+
+
+def has_latin(t):
+    """標題是否含可供英文索引比對的拉丁字母數字。"""
+    return bool(re.search(r"[a-z0-9]", (t or "").lower()))
 
 
 def title_sim(a, b):
-    return round(SequenceMatcher(None, norm_title(a), norm_title(b)).ratio(), 3)
+    na, nb = norm_title(a), norm_title(b)
+    # 正規化後為空(純符號/emoji):空對空的 ratio 是 1.0,會讓任意標題「完全匹配」
+    # 任意其他標題。查不到不得偽裝成查到 → 回 0.0。
+    if not na or not nb:
+        return 0.0
+    return round(SequenceMatcher(None, na, nb).ratio(), 3)
 
 
 def author_overlap(query_authors, cand_authors):
@@ -639,6 +717,18 @@ def score_candidate(cand, title, authors, year):
 
 
 def cmd_verify(args):
+    if not (args.title or "").strip():
+        print(json.dumps({"error": "INVALID_INPUT", "message": "--title 不可為空"},
+                         ensure_ascii=False))
+        sys.exit(1)
+    if not has_latin(args.title):
+        print(json.dumps({
+            "verdict_hint": "unsupported_title",
+            "absence_note": ("標題正規化後無可比對的拉丁字元(可能為中文/日文/純符號標題):"
+                             "本工具的相似度比對僅支援拉丁字母標題,無法判定。"
+                             "中文文獻請用 Google Scholar 或華藝等中文索引人工查核。"),
+        }, ensure_ascii=False, indent=1))
+        sys.exit(1)
     authors = [a.strip() for a in (args.authors or "").split(";") if a.strip()]
     result = {"query": {"title": args.title, "authors": authors or None, "year": args.year},
               "candidates": []}
@@ -666,16 +756,53 @@ def cmd_verify(args):
     except Exception as e:
         result["s2_error"] = str(e)
 
-    result["candidates"].sort(key=lambda c: c["match"]["title_sim"], reverse=True)
+    # 多鍵排序:title_sim 平手時由作者重疊與年份接近度決勝,否則真論文可能
+    # 排在無關候選之後,best_candidate 選錯會誤導下游把引用「修正」成錯的文獻
+    result["candidates"].sort(
+        key=lambda c: (c["match"]["title_sim"],
+                       c["match"].get("author_overlap") or 0.0,
+                       -(c["match"].get("year_diff") if c["match"].get("year_diff") is not None else 99)),
+        reverse=True)
     best = result["candidates"][0] if result["candidates"] else None
     if best is None:
         verdict = "not_found"
-    elif best["match"]["title_sim"] >= 0.93 and best["match"].get("year_diff", 0) <= 1:
-        verdict = "found"
-    elif best["match"]["title_sim"] >= 0.8:
-        verdict = "similar_found"   # 標題相近但可能有出入,需人工/LLM 判讀
     else:
-        verdict = "not_found"
+        m = best["match"]
+        ts = m["title_sim"]
+        ov = m.get("author_overlap")          # None = 使用者未給作者,不可據以否決
+        yd = m.get("year_diff")               # None = 任一方無年份,「未知」不等於 0
+        year_ok = yd is None or yd <= 1
+        # 雙路徑 identity gate:標題主導,或標題中等+作者強重疊(救回標題被貼壞的引用)
+        title_path = ts >= 0.93
+        author_path = ts >= 0.80 and ov is not None and ov >= 0.80
+        basis = {"match_path": "title" if title_path else "author" if author_path else "none",
+                 "title_similarity": ts, "author_overlap": ov,
+                 "author_overlap_denominator": "user_supplied", "year_diff": yd}
+        reasons = []
+        if not year_ok:
+            reasons.append(f"年份差 {yd} 年(>1)")
+        # 作者完全不重疊:標題再像也不得判 found——同名標題不同作者是最危險的假陽性
+        if ov is not None and ov == 0.0:
+            reasons.append("使用者提供的作者無一出現在候選作者中")
+        if args.year and yd is None:
+            reasons.append("候選無年份資料,無法用年份佐證")
+        # top-2 分數接近:不得自動 found
+        if len(result["candidates"]) > 1:
+            gap = ts - result["candidates"][1]["match"]["title_sim"]
+            if gap < 0.03:
+                reasons.append(f"前兩名候選標題相似度僅差 {round(gap, 3)},配對有歧義")
+                basis["ambiguous"] = True
+
+        if (title_path or author_path) and not reasons:
+            verdict = "found"
+            basis["identity_confidence"] = "high" if title_path and ov else "medium"
+        elif title_path or author_path or ts >= 0.8:
+            verdict = "similar_found"   # 標題相近但有疑點,需人工/LLM 判讀
+            basis["identity_confidence"] = "low"
+            basis["downgrade_reasons"] = reasons
+        else:
+            verdict = "not_found"
+        result["identity_basis"] = basis
 
     # 「查無」是研究結論,只有查詢真的完成才可用;來源掛掉不得偽裝成查無
     provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
@@ -688,6 +815,9 @@ def cmd_verify(args):
                                   "書籍章節、非英語文獻、產業論文集常不在這兩個索引中,查無 ≠ 不存在")
     result["verdict_hint"] = verdict
     print(json.dumps(result, ensure_ascii=False, indent=1))
+    # 查詢未完成必須讓自動化偵測得到:exit 0 只代表「查完且有結論」
+    if verdict == "partial_failure":
+        sys.exit(1)
 
 
 # ---------- export ----------
@@ -722,9 +852,25 @@ def cmd_export(args):
             sp = s2_get_paper("ARXIV:" + args.arxiv)
             p = {"title": sp["title"], "year": sp["year"], "authors": sp["authors"],
                  "arxiv": args.arxiv, "doi": sp.get("doi")}
-        except urllib.error.HTTPError:
-            print(json.dumps({"error": "not_found", "arxiv": args.arxiv}, ensure_ascii=False))
+        except urllib.error.HTTPError as e:
+            # 只有 404 才是「查無」;429/5xx 是查詢失敗,不得偽裝成文獻不存在
+            if e.code == 404:
+                print(json.dumps({"error": "not_found", "arxiv": args.arxiv,
+                                  "note": "S2 未收錄此 arXiv 編號;arXiv API 亦無回應,"
+                                          "請確認編號或稍後重試"}, ensure_ascii=False))
+            else:
+                print(json.dumps({"error": f"UPSTREAM_UNAVAILABLE (HTTP {e.code})",
+                                  "arxiv": args.arxiv,
+                                  "note": "查詢失敗,不是查無此文獻;請稍後重試"},
+                                 ensure_ascii=False))
             sys.exit(1)
+
+    def ris_safe(v):
+        # RIS 以行為單位:欄位值內的換行會截斷記錄,惡意/髒 metadata 可藉此注入假欄位
+        return re.sub(r"\s+", " ", str(v or "")).strip()
+
+    p = {k: (ris_safe(v) if isinstance(v, str) else v) for k, v in p.items()}
+    p["authors"] = [ris_safe(a) for a in (p.get("authors") or []) if a]
     if fmt == "ris":
         lines = ["TY  - GEN", f"TI  - {p['title']}"]
         lines += [f"AU  - {a}" for a in p["authors"]]
@@ -823,6 +969,14 @@ def main():
             out["hint"] = ("Semantic Scholar 共享池壅塞(重試後仍 429)。"
                            "等 60–120 秒再跑同一指令即可;長期解法是申請免費 S2_API_KEY 放入 .env。")
         print(json.dumps(out, ensure_ascii=False))
+        sys.exit(1)
+    except (ValueError, ET.ParseError) as e:
+        # HTTP 200 但回傳 HTML 維護頁/截斷 XML:上游壞掉不得變成 traceback,
+        # 更不得被誤解為「查無」——明確標成上游回應無法解析
+        print(json.dumps({"error": "UPSTREAM_UNPARSEABLE",
+                          "message": f"上游回應無法解析(可能是維護頁或截斷內容):{e}",
+                          "note": "這是查詢失敗,不是查無此文獻;請稍後重試"},
+                         ensure_ascii=False))
         sys.exit(1)
 
 
