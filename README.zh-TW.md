@@ -13,7 +13,7 @@
   <img src="assets/architecture-light.svg" alt="lit-review 架構:輸入 → 模式 → 引擎 → 驗證 → 產出,含自查迴圈" width="100%">
 </picture>
 
-*(圖由 `assets/gen_diagram.py` 產生——改文字或配色後重跑即可,調色盤經 CVD 色覺驗證。)*
+*(圖由 `assets/gen_diagram.py` 產生,同一支程式輸出中英文 × 深淺色四個版本——改文字或配色後重跑即可,調色盤經 CVD 色覺驗證。)*
 
 三個誠實機制貫穿所有路徑:書目欄位只來自 API 回傳(絕不用模型記憶)、每個判定附證據層級、生成的產出交付前由 fresh-context 懷疑論者審查。
 
@@ -75,6 +75,23 @@ git clone https://github.com/<you>/lit-review-skill ~/.claude/skills/lit-review
 S2_API_KEY=...        # semanticscholar.org/product/api 免費申請,避開共享池 429
 CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池
 ```
+
+## 不只是寫了,是驗過
+
+上面那些誠實承諾是靠測試守住的,不是靠善意:
+
+```bash
+python evals/test_regression.py     # 41 個凍結案例,不打網路,秒級跑完
+python evals/mutation_check.py      # 把 9 個已修的 bug 塞回去,每個都必須被抓到
+```
+
+`test_regression.py` 把每個找到過的缺陷凍成案例,每個案例都標了出處(`TS-*` 黑箱壓力測試、`CX-*` Codex 獨立原始碼審查、`DR-*` 設計 review)。它直接呼叫生產程式碼並餵凍結候選資料,所以不需要 API、秒級完成。
+
+`mutation_check.py` 回答一個全綠測試套件無法回答的問題:**它真的抓得到東西嗎?** 它逐一把修好的 bug 塞回去,要求指定案例必須失敗。這揪出了我自己兩個測試——它們偷偷把排序邏輯重新實作了一遍而不是呼叫真的程式碼,那種測試會永遠綠燈而底下的程式碼早就爛掉。
+
+**已在真實材料上跑過**:埋錯測試稿(錯年份、錯場刊、捏造文獻、中文文獻、缺引用論點)、兩份真實論文章節、學長 36 筆參考文獻(抓到作者誤植與頁碼錯誤)、對開放取用 PDF 的方程式查核、以及用獨立文獻工具對同一份查核做交叉驗證(判定全數一致,並找出一個真缺口:免費 API 不收錄的出版社摘要覆蓋率)。
+
+**還沒跑過**:別的領域(醫學、社科、人文的引用慣例與 API 覆蓋率差很多)、作者-年份(APA)格式文件、跨週的長期使用、以及由 Codex 而非 Claude 驅動的完整查核。這些是誠實的邊界。
 
 ## 設計原則
 

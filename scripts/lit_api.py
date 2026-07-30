@@ -716,6 +716,63 @@ def score_candidate(cand, title, authors, year):
     return s
 
 
+def rank_candidates(candidates):
+    """依 (title_sim, author_overlap, 年份接近度) 多鍵排序。
+
+    平手時若只看 title_sim,真論文可能排在無關候選之後,best_candidate 選錯
+    會誤導下游把引用「修正」成錯的文獻。與 decide_verdict 一樣是純函式,
+    可在不打 API 的情況下測試(見 evals/test_regression.py)。
+    """
+    return sorted(candidates,
+                  key=lambda c: (c["match"]["title_sim"],
+                                 c["match"].get("author_overlap") or 0.0,
+                                 -(c["match"].get("year_diff")
+                                   if c["match"].get("year_diff") is not None else 99)),
+                  reverse=True)
+
+
+def decide_verdict(candidates, *, year_supplied=False):
+    """雙路徑 identity gate:回 (verdict, identity_basis)。純函式,無 I/O。
+
+    路徑一(標題主導)title_sim ≥ .93;路徑二(作者主導)title_sim ≥ .80 且
+    author_overlap ≥ .80——後者用來救回「標題被複製貼上弄壞、但作者對得上」
+    的真引用。任一路徑通過後仍須過年份、作者零重疊、歧義三道降級檢查。
+    """
+    if not candidates:
+        return "not_found", None
+    m = candidates[0]["match"]
+    ts = m["title_sim"]
+    ov = m.get("author_overlap")      # None = 使用者未給作者,不可據以否決
+    yd = m.get("year_diff")           # None = 任一方無年份,「未知」不等於 0
+    title_path = ts >= 0.93
+    author_path = ts >= 0.80 and ov is not None and ov >= 0.80
+    basis = {"match_path": "title" if title_path else "author" if author_path else "none",
+             "title_similarity": ts, "author_overlap": ov,
+             "author_overlap_denominator": "user_supplied", "year_diff": yd}
+    reasons = []
+    if yd is not None and yd > 1:
+        reasons.append(f"年份差 {yd} 年(>1)")
+    if ov is not None and ov == 0.0:
+        # 同名標題不同作者是最危險的假陽性:標題再像也不得判 found
+        reasons.append("使用者提供的作者無一出現在候選作者中")
+    if year_supplied and yd is None:
+        reasons.append("候選無年份資料,無法用年份佐證")
+    if len(candidates) > 1:
+        gap = ts - candidates[1]["match"]["title_sim"]
+        if gap < 0.03:
+            reasons.append(f"前兩名候選標題相似度僅差 {round(gap, 3)},配對有歧義")
+            basis["ambiguous"] = True
+
+    if (title_path or author_path) and not reasons:
+        basis["identity_confidence"] = "high" if title_path and ov else "medium"
+        return "found", basis
+    if title_path or author_path or ts >= 0.8:
+        basis["identity_confidence"] = "low"
+        basis["downgrade_reasons"] = reasons
+        return "similar_found", basis      # 標題相近但有疑點,需人工/LLM 判讀
+    return "not_found", basis
+
+
 def cmd_verify(args):
     if not (args.title or "").strip():
         print(json.dumps({"error": "INVALID_INPUT", "message": "--title 不可為空"},
@@ -756,52 +813,9 @@ def cmd_verify(args):
     except Exception as e:
         result["s2_error"] = str(e)
 
-    # 多鍵排序:title_sim 平手時由作者重疊與年份接近度決勝,否則真論文可能
-    # 排在無關候選之後,best_candidate 選錯會誤導下游把引用「修正」成錯的文獻
-    result["candidates"].sort(
-        key=lambda c: (c["match"]["title_sim"],
-                       c["match"].get("author_overlap") or 0.0,
-                       -(c["match"].get("year_diff") if c["match"].get("year_diff") is not None else 99)),
-        reverse=True)
-    best = result["candidates"][0] if result["candidates"] else None
-    if best is None:
-        verdict = "not_found"
-    else:
-        m = best["match"]
-        ts = m["title_sim"]
-        ov = m.get("author_overlap")          # None = 使用者未給作者,不可據以否決
-        yd = m.get("year_diff")               # None = 任一方無年份,「未知」不等於 0
-        year_ok = yd is None or yd <= 1
-        # 雙路徑 identity gate:標題主導,或標題中等+作者強重疊(救回標題被貼壞的引用)
-        title_path = ts >= 0.93
-        author_path = ts >= 0.80 and ov is not None and ov >= 0.80
-        basis = {"match_path": "title" if title_path else "author" if author_path else "none",
-                 "title_similarity": ts, "author_overlap": ov,
-                 "author_overlap_denominator": "user_supplied", "year_diff": yd}
-        reasons = []
-        if not year_ok:
-            reasons.append(f"年份差 {yd} 年(>1)")
-        # 作者完全不重疊:標題再像也不得判 found——同名標題不同作者是最危險的假陽性
-        if ov is not None and ov == 0.0:
-            reasons.append("使用者提供的作者無一出現在候選作者中")
-        if args.year and yd is None:
-            reasons.append("候選無年份資料,無法用年份佐證")
-        # top-2 分數接近:不得自動 found
-        if len(result["candidates"]) > 1:
-            gap = ts - result["candidates"][1]["match"]["title_sim"]
-            if gap < 0.03:
-                reasons.append(f"前兩名候選標題相似度僅差 {round(gap, 3)},配對有歧義")
-                basis["ambiguous"] = True
-
-        if (title_path or author_path) and not reasons:
-            verdict = "found"
-            basis["identity_confidence"] = "high" if title_path and ov else "medium"
-        elif title_path or author_path or ts >= 0.8:
-            verdict = "similar_found"   # 標題相近但有疑點,需人工/LLM 判讀
-            basis["identity_confidence"] = "low"
-            basis["downgrade_reasons"] = reasons
-        else:
-            verdict = "not_found"
+    result["candidates"] = rank_candidates(result["candidates"])
+    verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(args.year))
+    if basis:
         result["identity_basis"] = basis
 
     # 「查無」是研究結論,只有查詢真的完成才可用;來源掛掉不得偽裝成查無

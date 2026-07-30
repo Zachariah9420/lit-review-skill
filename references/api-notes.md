@@ -89,6 +89,13 @@
 - `export-xml` 產 EndNote XML:entry 的 `research_notes` 欄+品質紅旗+arXiv 編號會進 EndNote 的 Research Notes——把查核結論隨文獻帶進引用管理軟體。輸入吃本工具任何存檔 JSON 或 pick 輸出;實務流程:pick 選定 → agent 在 JSON 加 research_notes(支持度/證據句)→ export-xml。
 - 撤稿查詢 `retract`:Crossref update-notice(含 Retraction Watch 併入資料),retraction/expression_of_concern 級 → 🚨 不可引用;correction 級 → ⚠️ 確認更正內容。**無記錄 ≠ 保證沒事**(覆蓋不完備,尤其非英文期刊)。實測:Wakefield 1998 抓到 2004 部分撤回+2010 全文撤稿。
 
+## 標題比對的兩個致命陷阱(都曾實際發生)
+
+1. **非拉丁字元被刪掉導致塌縮**:早期 `norm_title` 只留 `[a-z0-9 ]`,於是純中文標題正規化後為空(空對空的 SequenceMatcher ratio 是 **1.0**),而混語標題(「深度學習:A Study」)只剩共同的英文副標,兩篇無關論文也算 1.0。現行做法:**保留 CJK 字元**、其餘符號以空格取代(刪除會讓「Need:A」黏成「needa」)、任一方正規化後為空則相似度直接回 0.0。非拉丁標題另由 `has_latin()` 擋在 API 呼叫前,回 `unsupported_title` 並指引改用中文索引。
+2. **年份缺值被當成相符**:`m.get("year_diff", 0)` 讓「候選沒有年份」變成「年份完全相符」而通過閘門。現行:`year_diff is None` 代表未知,使用者有給年份而候選無年份時必須降級並附原因。
+
+兩者都有迴歸測試案例(CX-01、TS-F11a/b/c、CX-03)與突變測試守護,改 `norm_title` 或判定閘門前先讀 `evals/`。
+
 ## 書籍類文獻的驗證盲點
 
 - Crossref/S2 對專書(尤其 2010 年前)收錄很差,`verify` 常只命中**同名書評**(title_sim=1.0 但作者是書評人)——這不是配對錯誤,是資料庫特性。

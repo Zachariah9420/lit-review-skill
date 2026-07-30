@@ -19,22 +19,23 @@ THEMES = {
     },
 }
 
+LANG = "zh"          # 由 main 迴圈覆寫
 W, H = 1274, 622
 COL_Y, COL_H, COL_W, GAP = 148, 302, 210, 30
 XS = [52 + i * (COL_W + GAP) for i in range(5)]
 
-COLS = [
+COLS_ZH = [
     ("輸入", "INPUT", [
-        ("論文草稿 thesis draft", 0), ("研究主題 topic", 0), ("單筆引用 citation", 0),
+        ("論文草稿", 0), ("研究主題", 0), ("單筆引用", 0),
         ("—", 2),
-        ("19 個指令或自然語言:", 1),
+        ("21 個指令或自然語言:", 1),
         ("check · find · write", 1), ("verify · annotate …", 1),
         ("無指令時自動推斷模式", 1),
     ]),
     ("三模式+工具組", "MODES", [
-        ("A|找文獻 find", 0), ("B|查核引用 audit", 0), ("C|文獻支撐寫作 write", 0),
+        ("A|找文獻", 0), ("B|查核引用", 0), ("C|文獻支撐寫作", 0),
         ("—", 2),
-        ("研究生工具組 toolkit:", 1),
+        ("研究生工具組:", 1),
         ("matrix · map · gap", 1), ("counter · strength", 1),
         ("claims · integrity", 1), ("glossary · rehearse …", 1),
     ]),
@@ -42,22 +43,59 @@ COLS = [
         ("lit_api.py|純標準函式庫", 1),
         ("Semantic Scholar", 0), ("⇄ OpenAlex 429 備援", 0),
         ("Crossref 書目權威", 0), ("arXiv(掛掉退 S2)", 0),
-        ("retract 撤稿 · versions", 0),
-        ("snowball · batch", 1), ("brief/pick 省token漏斗", 1),
+        ("撤稿 · 版本解析", 0),
+        ("snowball · batch", 1), ("brief/pick 省 token 漏斗", 1),
     ]),
     ("驗證層", "VERIFY", [
-        ("三層隔離 firewalls:", 0), ("證據 · 角色 · 注入", 1),
-        ("品質紅旗 quality flags", 0),
-        ("對抗式自查 self-audit", 0),
-        ("證據層級 evidence levels", 0), ("[摘要] [全文 p.X] [?]", 1),
-        ("強度 quick/預設/thorough", 1),
+        ("三層隔離:", 0), ("證據 · 角色 · 注入", 1),
+        ("雙路徑身分閘門", 0),
+        ("對抗式自查", 0),
+        ("證據層級", 0), ("[摘要] [全文 p.X] [?]", 1),
+        ("41 案例迴歸測試", 0),
     ]),
     ("產出", "OUTPUT", [
-        ("查核報告 audit report", 0), ("給作者修改清單 fix list", 0),
-        ("RIS · BibTeX · EN-XML", 0), ("帶引用文章 article", 0),
-        ("文獻矩陣 matrix", 0), ("筆記卡 · 領域地圖", 0),
+        ("查核報告", 0), ("給作者修改清單", 0),
+        ("RIS · BibTeX · EN-XML", 0), ("帶引用文章", 0),
+        ("文獻矩陣", 0), ("筆記卡 · 領域地圖", 0),
     ]),
 ]
+
+COLS_EN = [
+    ("Input", "INPUT", [
+        ("thesis draft", 0), ("research topic", 0), ("single citation", 0),
+        ("—", 2),
+        ("21 commands, or plain language:", 1),
+        ("check · find · write", 1), ("verify · annotate …", 1),
+        ("mode inferred when unspecified", 1),
+    ]),
+    ("Modes + toolkit", "MODES", [
+        ("A|find literature", 0), ("B|audit citations", 0), ("C|grounded writing", 0),
+        ("—", 2),
+        ("grad toolkit:", 1),
+        ("matrix · map · gap", 1), ("counter · strength", 1),
+        ("claims · integrity", 1), ("glossary · rehearse …", 1),
+    ]),
+    ("Retrieval engine", "ENGINE", [
+        ("lit_api.py|stdlib only", 1),
+        ("Semantic Scholar", 0), ("⇄ OpenAlex on 429", 0),
+        ("Crossref (authority)", 0), ("arXiv (falls back to S2)", 0),
+        ("retractions · versions", 0),
+        ("snowball · batch", 1), ("brief/pick token funnel", 1),
+    ]),
+    ("Verification", "VERIFY", [
+        ("three firewalls:", 0), ("evidence · role · injection", 1),
+        ("dual-path identity gate", 0),
+        ("adversarial self-audit", 0),
+        ("evidence levels", 0), ("[abstract] [full text p.X] [?]", 1),
+        ("41-case regression suite", 0),
+    ]),
+    ("Output", "OUTPUT", [
+        ("audit report", 0), ("author fix list", 0),
+        ("RIS · BibTeX · EN-XML", 0), ("cited article", 0),
+        ("literature matrix", 0), ("note cards · field map", 0),
+    ]),
+]
+
 
 
 def esc(s):
@@ -71,12 +109,17 @@ def build(theme):
     p.append(f'<rect width="{W}" height="{H}" rx="14" fill="{t["surface"]}"/>')
     # 標題
     p.append(f'<text x="52" y="64" font-size="30" font-weight="700" fill="{t["ink"]}">lit-review</text>')
-    p.append(f'<text x="212" y="64" font-size="15" fill="{t["ink2"]}">evidence-layer skill for LLM agents</text>')
-    p.append(f'<text x="52" y="96" font-size="15" fill="{t["ink2"]}">先檢索、後寫作、寫完自查 —— 每個引用都經得起追問&#160;&#160;·&#160;&#160;retrieve first, write second, self-audit last</text>')
+    sub = ("evidence-layer skill for LLM agents" if LANG == "en"
+           else "給 LLM agent 的文獻證據層 skill")
+    tag = ("retrieve first · write second · self-audit last — every citation survives the follow-up question"
+           if LANG == "en" else "先檢索、後寫作、寫完自查 —— 每個引用都經得起追問")
+    p.append(f'<text x="212" y="64" font-size="15" fill="{t["ink2"]}">{esc(sub)}</text>')
+    p.append(f'<text x="52" y="96" font-size="15" fill="{t["ink2"]}">{esc(tag)}</text>')
     # 箭頭 marker
     p.append(f'<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{t["muted"]}"/></marker></defs>')
     # 欄位
-    for i, (zh, en, items) in enumerate(COLS):
+    cols = COLS_EN if LANG == "en" else COLS_ZH
+    for i, (zh, en, items) in enumerate(cols):
         x, c = XS[i], t["c"][i]
         p.append(f'<rect x="{x}" y="{COL_Y}" width="{COL_W}" height="{COL_H}" rx="12" fill="{c}" fill-opacity="{t["fill_alpha"]}" stroke="{c}" stroke-width="1.6"/>')
         p.append(f'<rect x="{x+8}" y="{COL_Y}" width="{COL_W-16}" height="5" rx="2.5" fill="{c}"/>')
@@ -105,18 +148,21 @@ def build(theme):
     ly = COL_Y + COL_H + 30
     p.append(f'<path d="M {vx} {COL_Y+COL_H+3} C {vx} {ly}, {mx} {ly}, {mx} {COL_Y+COL_H+14}" fill="none" stroke="{t["c"][3]}" stroke-width="2" stroke-dasharray="6 5"/>')
     p.append(f'<path d="M {mx} {COL_Y+COL_H+5} L {mx-5.5} {COL_Y+COL_H+15} L {mx+5.5} {COL_Y+COL_H+15} Z" fill="{t["c"][3]}"/>')
-    p.append(f'<text x="{(vx+mx)/2}" y="{ly+13}" font-size="12.5" text-anchor="middle" fill="{t["ink2"]}">未過自查就修正重來 — fix before delivery</text>')
+    p.append(f'<text x="{(vx+mx)/2}" y="{ly+13}" font-size="12.5" text-anchor="middle" fill="{t["ink2"]}">{esc("fix before delivery if the self-audit fails" if LANG == "en" else "未過自查就修正重來")}</text>')
     # 底部誠實原則
     sy = 528
     p.append(f'<rect x="52" y="{sy}" width="{W-104}" height="56" rx="10" fill="none" stroke="{t["hairline"]}" stroke-width="1.2"/>')
-    p.append(f'<text x="{W/2}" y="{sy+24}" font-size="13.5" font-weight="600" text-anchor="middle" fill="{t["ink"]}">查不到 ≠ 不存在&#160;&#160;&#160;·&#160;&#160;&#160;記憶只能起疑,不能作證&#160;&#160;&#160;·&#160;&#160;&#160;每個判定附證據層級</text>')
-    p.append(f'<text x="{W/2}" y="{sy+44}" font-size="11.5" text-anchor="middle" fill="{t["muted"]}">not found &#8800; nonexistent&#160;&#160;·&#160;&#160;memory may suspect — only evidence convicts&#160;&#160;·&#160;&#160;every verdict carries its evidence level</text>')
+    p.append(f'<text x="{W/2}" y="{sy+24}" font-size="13.5" font-weight="600" text-anchor="middle" fill="{t["ink"]}">{esc("not found ≠ nonexistent    ·    memory may suspect, only evidence convicts    ·    every verdict carries its evidence level" if LANG == "en" else "查不到 ≠ 不存在    ·    記憶只能起疑,不能作證    ·    每個判定附證據層級")}</text>')
+    p.append(f'<text x="{W/2}" y="{sy+44}" font-size="11.5" text-anchor="middle" fill="{t["muted"]}">{esc("a lookup that failed is never reported as a citation that does not exist" if LANG == "en" else "not found ≠ nonexistent · memory may suspect, only evidence convicts")}</text>')
     p.append('</svg>')
     return "\n".join(p)
 
 
-for theme in ("light", "dark"):
-    out = os.path.join(BASE, f"architecture-{theme}.svg")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(build(theme))
-    print("written", out)
+for lang in ("zh", "en"):
+    LANG = lang
+    for theme in ("light", "dark"):
+        suffix = f"-{theme}" if lang == "zh" else f"-en-{theme}"
+        out = os.path.join(BASE, f"architecture{suffix}.svg")
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(build(theme))
+        print("written", out)

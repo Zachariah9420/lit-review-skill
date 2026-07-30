@@ -1,0 +1,11 @@
+[
+ {
+  "title": "A Paper",
+  "year": 2024,
+  "authors": [
+   "A. One"
+  ],
+  "doi": "10.1/a",
+  "abstract": "Some abstract text."
+ }
+]

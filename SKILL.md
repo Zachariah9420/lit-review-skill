@@ -174,6 +174,17 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 - new_refs.ris(N 筆,可直接匯入 EndNote)
 ```
 
+## 改動本 skill 前必讀:迴歸測試
+
+腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後,交付前一定跑**:
+
+```bash
+python evals/test_regression.py     # 41 個凍結案例,不打 API,秒級
+python evals/mutation_check.py      # 驗證測試本身有偵測力(9 個突變都須被抓到)
+```
+
+修了新缺陷就**在 `test_regression.py` 加一個案例**(標出處:`TS-*` 壓測 / `CX-*` 原始碼審查 / `DR-*` 設計 review),並在 `mutation_check.py` 加對應突變——否則下一次改動可能靜默把它弄壞。測試必須呼叫生產函式(`rank_candidates`、`decide_verdict` 等),**不可在測試裡重新實作邏輯**:突變測試抓過這種假測試。
+
 ## 隔離原則(判讀效力的來源)
 
 所有判讀/查核動作必須套用三層隔離,**prompt 模板在 [references/prompts.md](references/prompts.md),派 agent 或切換角色時逐字採用其隔離條款**:

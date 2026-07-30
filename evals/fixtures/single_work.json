@@ -1,0 +1,14 @@
+{
+ "source": "crossref",
+ "title": "A Single Work Record",
+ "year": 2023,
+ "authors": [
+  "Solo, Author"
+ ],
+ "doi": "10.1/single",
+ "container": "Journal of Tests",
+ "type": "journal-article",
+ "volume": "1",
+ "issue": "2",
+ "page": "3-4"
+}

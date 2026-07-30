@@ -1,0 +1,20 @@
+{
+ "results": [
+  {
+   "title": "First Work",
+   "year": 2020,
+   "authors": [
+    "A. One"
+   ],
+   "doi": "10.1/1"
+  },
+  {
+   "title": "Second Work",
+   "year": 2021,
+   "authors": [
+    "B. Two"
+   ],
+   "doi": "10.1/2"
+  }
+ ]
+}
