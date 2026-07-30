@@ -195,7 +195,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 60 個凍結案例，不打 API，秒級
+python evals/test_regression.py     # 66 個凍結案例，不打 API，秒級
 python evals/mutation_check.py      # 驗證測試本身有偵測力(9 個突變都須被抓到)
 ```
 

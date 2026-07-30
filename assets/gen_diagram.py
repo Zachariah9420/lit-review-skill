@@ -51,7 +51,7 @@ COLS_ZH = [
         ("雙路徑身分閘門", 0),
         ("對抗式自查", 0),
         ("證據層級", 0), ("[摘要] [全文 p.X] [?]", 1),
-        ("60 案例迴歸測試", 0),
+        ("66 案例迴歸測試", 0),
     ]),
     ("產出", "OUTPUT", [
         ("查核報告", 0), ("給作者修改清單", 0),
@@ -87,7 +87,7 @@ COLS_EN = [
         ("dual-path identity gate", 0),
         ("adversarial self-audit", 0),
         ("evidence levels", 0), ("[abstract] [full text p.X] [?]", 1),
-        ("60-case regression suite", 0),
+        ("66-case regression suite", 0),
     ]),
     ("Output", "OUTPUT", [
         ("audit report", 0), ("author fix list", 0),

@@ -130,12 +130,29 @@ CROSSREF_MAILTO=you@example.com   # joins the Crossref/OpenAlex polite pools
 
 Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`).
 
+## Packaging for upload (ChatGPT Skills, or sharing)
+
+A cloned folder is **not** directly uploadable — zipping it would include the
+`.git` directory, and the top-level folder would be named after the repo rather
+than the skill. One command produces a correct package:
+
+```bash
+python scripts/package_skill.py          # → lit-review.zip
+```
+
+It takes the file list from `git ls-files`, so the package contains exactly what
+a clone contains (nothing gitignored, no `.git`, no `.env`), wraps it in a
+`lit-review/` top-level folder so `SKILL.md` sits where the platform expects it,
+then runs `evals/zip_check.py` for API keys, personal email addresses and
+machine-specific paths. **If that check fails the ZIP is deleted rather than
+handed to you** — a package that leaks is worse than no package.
+
 ## Verified, not just written
 
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 60 frozen cases, no network, seconds
+python evals/test_regression.py     # 66 frozen cases, no network, seconds
 python evals/mutation_check.py      # re-introduces 9 fixed bugs; each must be caught
 ```
 

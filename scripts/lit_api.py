@@ -896,7 +896,7 @@ def same_work(a, b):
     return title_sim(a.get("title"), b.get("title")) >= 0.95 and a.get("year") == b.get("year")
 
 
-def decide_verdict(candidates, *, year_supplied=False):
+def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False):
     """雙路徑 identity gate：回 (verdict, identity_basis)。純函式，無 I/O。
 
     路徑一(標題主導)title_sim ≥ .93；路徑二(作者主導)title_sim ≥ .80 且
@@ -920,6 +920,12 @@ def decide_verdict(candidates, *, year_supplied=False):
     if ov is not None and ov == 0.0:
         # 同名標題不同作者是最危險的假陽性：標題再像也不得判 found
         reasons.append("使用者提供的作者無一出現在候選作者中")
+    elif authors_supplied and ov is None:
+        # 使用者給了作者、候選卻沒有作者欄 → 無從比對，不得當成「作者相符」放行。
+        # 這在醫學是常態陷阱：期刊的 correspondence／editorial 會原字照抄母論文
+        # 標題，Crossref 標為 journal-article 而作者欄常是空的。若不擋，一筆正確的
+        # 引用會被「改正」成投書的卷期頁。（與 year_supplied 同一道理，見下一條）
+        reasons.append("候選無作者資料，無法用使用者提供的作者佐證")
     if year_supplied and yd is None:
         reasons.append("候選無年份資料，無法用年份佐證")
     # 歧義只在「第二名是另一篇論文」時成立；同一篇的不同來源要略過
@@ -1000,10 +1006,21 @@ def verify_one(title, authors, year):
             result[name + "_error"] = out[name + "_error"]
 
     result["candidates"] = rank_candidates(result["candidates"])
-    verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(year))
+    verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(year),
+                                    authors_supplied=bool(authors))
     if basis:
         result["identity_basis"] = basis
     provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
+    if provider_errors and result["candidates"]:
+        # 有候選但某個來源掛了 → 判定實際上退化成單源。這與雙源互相印證的
+        # 證據強度不同，使用者必須看得出差別，不能只把錯誤埋在 *_error 欄位。
+        result["single_source_degraded"] = (
+            f"{', '.join(provider_errors)} 查詢失敗，本次判定僅根據單一來源；"
+            "證據強度低於雙源交叉，建議稍後重跑確認")
+        if basis:
+            if basis.get("identity_confidence") == "high":
+                basis["identity_confidence"] = "medium"
+            basis["sources_degraded"] = provider_errors
     if verdict == "not_found" and provider_errors:
         verdict = "partial_failure"
         result["absence_note"] = ("查詢未完整完成（" + ", ".join(provider_errors)

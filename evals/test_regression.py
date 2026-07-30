@@ -365,6 +365,56 @@ def test_integrity_parsing():
 
 
 
+
+def test_empty_author_candidate():
+    """MED-*（醫學 fresh session 實測發現）：候選文獻的作者欄為空時，author_overlap
+    回 None，與「使用者沒給作者」無法區分，於是繞過最強的假陽性守門。
+
+    醫學期刊的 correspondence／editorial 會原字照抄母論文標題，Crossref 標為
+    journal-article 而作者欄常是空的——一筆正確的引用會被「改正」成投書的卷期頁。
+    年份側早有 year_supplied 處理同一種語意塌縮，作者側先前沒有。
+    """
+    letter = {"title": "Safety and Efficacy of the BNT162b2 mRNA Covid-19 Vaccine",
+              "year": 2021, "authors": [], "doi": "10.1056/nejmc2036242"}
+    real = {"title": "Safety and Efficacy of the BNT162b2 mRNA Covid-19 Vaccine",
+            "year": 2020, "authors": ["Fernando P. Polack", "Stephen J. Thomas"],
+            "doi": "10.1056/NEJMoa2034577"}
+
+    c = dict(letter)
+    c["match"] = la.score_candidate(c, letter["title"], ["Polack", "Thomas"], 2020)
+    v, b = la.decide_verdict([c], year_supplied=True, authors_supplied=True)
+    reasons = (b or {}).get("downgrade_reasons") or []
+    check("MED-01", "使用者給了作者、候選作者欄為空 → 不得判 found",
+          v != "found" and any("作者" in r for r in reasons),
+          f"verdict={v} reasons={reasons}")
+
+    c2 = dict(real)
+    c2["match"] = la.score_candidate(c2, real["title"], ["Polack", "Thomas"], 2020)
+    v2, b2 = la.decide_verdict([c2], year_supplied=True, authors_supplied=True)
+    check("MED-02", "作者真的對得上時仍判 found（修正不得誤傷真論文）",
+          v2 == "found" and (b2 or {}).get("identity_confidence") == "high",
+          f"verdict={v2} conf={(b2 or {}).get('identity_confidence')}")
+
+    v3, _ = la.decide_verdict([c2], year_supplied=True, authors_supplied=False)
+    check("MED-03", "使用者未提供作者時不因作者欄缺失而降級",
+          v3 == "found", f"verdict={v3}")
+
+    check("MED-04", "verify_one 有把 authors_supplied 傳進 decide_verdict",
+          "authors_supplied=bool(authors)" in
+          open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read())
+
+
+def test_single_source_degradation():
+    """MED-05：某個來源掛掉但另一來源仍有候選時，判定實際上退化成單源。
+    使用者必須看得出證據強度的差別，不能只把錯誤埋在 *_error 欄位裡。"""
+    src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
+    fn = src[src.index("def verify_one"):src.index("def cmd_verify_batch")]
+    check("MED-05", "單源退化時輸出 single_source_degraded 說明",
+          "single_source_degraded" in fn and "證據強度低於雙源交叉" in fn)
+    check("MED-06", "單源退化時把 high 信心降為 medium",
+          'get("identity_confidence") == "high"' in fn and "sources_degraded" in fn)
+
+
 def test_vancouver_and_list_guard():
     """PH-*（藥學 fresh session 實測發現）：醫藥期刊用 Vancouver 列表（1. Author），
     只認 [n] 會讓列表解析成 0 筆，然後把全部引用誤報成「引了沒列」——沉默的錯誤答案。"""
@@ -507,7 +557,8 @@ def main():
     ap.add_argument("-k", "--filter", default="")
     args = ap.parse_args()
 
-    suites = [test_vancouver_and_list_guard, test_retraction_fallback,
+    suites = [test_empty_author_candidate, test_single_source_degradation,
+              test_vancouver_and_list_guard, test_retraction_fallback,
               test_title_similarity, test_author_overlap, test_identity_gate,
               test_crash_paths, test_absence_semantics, test_integrity_parsing,
               test_rate_limiter_concurrency, test_verify_one_shared_logic,

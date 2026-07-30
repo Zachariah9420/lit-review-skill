@@ -95,12 +95,27 @@ S2_API_KEY=...        # semanticscholar.org/product/api 免費申請，避開共
 CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池
 ```
 
+## 打包上傳（ChatGPT Skills 或分享給別人）
+
+**clone 下來的資料夾不能直接壓縮上傳**：那樣會把 `.git` 目錄一起包進去，而且頂層
+資料夾名稱會是 repo 名而不是 skill 名。用這行產生正確的包：
+
+```bash
+python scripts/package_skill.py          # → lit-review.zip
+```
+
+它以 `git ls-files` 為清單，所以包的內容**就等於 clone 會拿到的東西**（不含
+gitignore 的檔案、不含 `.git`、不含 `.env`），並包成 `lit-review/` 頂層資料夾讓
+`SKILL.md` 落在平台預期的位置，最後自動跑 `evals/zip_check.py` 掃金鑰、個人
+email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給你**——會外洩的包
+比沒有包更糟。
+
 ## 不只是寫了，是驗過
 
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 60 個凍結案例，不打網路，秒級跑完
+python evals/test_regression.py     # 66 個凍結案例，不打網路，秒級跑完
 python evals/mutation_check.py      # 把 9 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
