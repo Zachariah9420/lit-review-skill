@@ -71,6 +71,7 @@ git clone https://github.com/<repo>/lit-review-skill ~/.claude/skills/lit-review
 | `strength <文獻+論點>` | 證據強度評級(統合分析 vs 橫斷面小樣本，一眼分清) |
 | `claims <檔案>` | Claim–Evidence 總表：每個論點有幾篇支持/反對、證據多強 |
 | `retract <DOI>` | 撤稿/更正查詢(`check` 已預設內含，零 LLM 成本) |
+| `fulltext <DOI>` | 查合法可取得的全文；沒有免費版時給機構取得途徑 |
 | `versions <arXiv或DOI>` | preprint↔正式版解析，有正式版就給 DOI 建議改引 |
 | `export-xml <選定文獻>` | EndNote XML 匯出，查核結論(支持度/證據句/紅旗)一起進 Research Notes 欄 |
 

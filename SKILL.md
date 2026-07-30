@@ -37,9 +37,12 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 | `counter <論點>` | 主動找反面/零結果證據 | `counter 社群媒體降低學業表現` |
 | `strength <文獻+論點>` | 證據強度評級(HIGH/MEDIUM/LOW/UNKNOWN) | `strength 這篇撐不撐得起因果宣稱` |
 | `claims <檔案>` | Claim–Evidence 總表(支持/反對/強度/總評) | `claims 第二章.docx` |
-| `retract <DOI清單>` | 撤稿/更正記錄查詢(check 已預設內含) | `retract 10.1016/xxx` |
+| `retract <DOI清單>` | 撤稿/更正記錄查詢（check 已預設內含） | `retract 10.1016/xxx` |
+| `fulltext <DOI清單>` | 合法全文定位（Unpaywall+OA）；無免費版時給機構取得途徑 | `fulltext 10.1038/xxx` |
+| `versions <arXiv或DOI>` | preprint↔正式版解析，有正式版就建議改引 | `versions ARXIV:2301.12345` |
+| `export-xml <選定文獻>` | EndNote XML（查核結論進 Research Notes 欄） | `export-xml picked.json` |
 
-後八個是研究生工具組——**執行前先讀 [references/grad-toolkit.md](references/grad-toolkit.md) 的對應小節**，每個功能的工作流程、誠實聲明要求與已知限制都在那裡。`integrity` 用 `scripts/cite_integrity.py`(確定性腳本，任何 check 交付前都順手跑一次)。
+`map` 之後的都是研究生工具組——**執行前先讀 [references/grad-toolkit.md](references/grad-toolkit.md) 的對應小節**，每個功能的工作流程、誠實聲明要求與已知限制都在那裡。`integrity` 用 `scripts/cite_integrity.py`(確定性腳本，任何 check 交付前都順手跑一次)。
 
 看到 ARGUMENTS 或訊息以這些指令詞開頭 → **直接進對應模式，不再推斷、不再確認**。
 
@@ -191,7 +194,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 41 個凍結案例，不打 API，秒級
+python evals/test_regression.py     # 50 個凍結案例，不打 API，秒級
 python evals/mutation_check.py      # 驗證測試本身有偵測力(9 個突變都須被抓到)
 ```
 

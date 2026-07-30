@@ -3,7 +3,7 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 41 frozen cases
+python evals/test_regression.py     # 50 frozen cases
 python evals/mutation_check.py      # 9 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
@@ -26,6 +26,35 @@ It calls the production functions (`rank_candidates`, `decide_verdict`, `norm_ti
 A green suite proves nothing about detection power. This script re-introduces each fixed bug one at a time and requires that a named case fails. If a mutation survives, the corresponding protection has no test behind it.
 
 It found two tests of mine that had re-implemented the ranking logic instead of calling it — they would have stayed green forever while the real code rotted. **Tests must call production functions.**
+
+## doc_scan.py
+
+Docs drift faster than code in this project — commands get added and the counts,
+tables, and feature lists quietly fall behind. This script compares what the code
+actually exposes against what every document claims: CLI subcommands vs the command
+table, the real regression-case count vs every "N cases" claim, mutation count,
+the diagram's numbers, whether new commands reached all four docs, and whether the
+English and Chinese versions still have the same section count.
+
+```bash
+python evals/doc_scan.py
+```
+
+It has caught, in one pass: five documents claiming 41 test cases when there were
+50, a diagram advertising 21 commands when the table listed 20, and `fulltext`
+missing from both usage guides.
+
+## zip_check.py
+
+Before sharing a packaged skill (uploading to ChatGPT, sending to a colleague):
+
+```bash
+python evals/zip_check.py lit-review.zip
+```
+
+Scans the archive for API keys, personal email addresses, machine-specific absolute
+paths, and stray `.env` / `.git` / `__pycache__` entries. Manual review misses these;
+a regex does not.
 
 ## Adding a case
 

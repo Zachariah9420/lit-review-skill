@@ -28,7 +28,7 @@ COLS_ZH = [
     ("輸入", "INPUT", [
         ("論文草稿", 0), ("研究主題", 0), ("單筆引用", 0),
         ("—", 2),
-        ("21 個指令或自然語言：", 1),
+        ("20 個指令或自然語言：", 1),
         ("check · find · write", 1), ("verify · annotate …", 1),
         ("無指令時自動推斷模式", 1),
     ]),
@@ -51,7 +51,7 @@ COLS_ZH = [
         ("雙路徑身分閘門", 0),
         ("對抗式自查", 0),
         ("證據層級", 0), ("[摘要] [全文 p.X] [?]", 1),
-        ("41 案例迴歸測試", 0),
+        ("50 案例迴歸測試", 0),
     ]),
     ("產出", "OUTPUT", [
         ("查核報告", 0), ("給作者修改清單", 0),
@@ -64,7 +64,7 @@ COLS_EN = [
     ("Input", "INPUT", [
         ("thesis draft", 0), ("research topic", 0), ("single citation", 0),
         ("—", 2),
-        ("21 commands, or plain language:", 1),
+        ("20 commands, or plain language:", 1),
         ("check · find · write", 1), ("verify · annotate …", 1),
         ("mode inferred when unspecified", 1),
     ]),
@@ -87,7 +87,7 @@ COLS_EN = [
         ("dual-path identity gate", 0),
         ("adversarial self-audit", 0),
         ("evidence levels", 0), ("[abstract] [full text p.X] [?]", 1),
-        ("41-case regression suite", 0),
+        ("50-case regression suite", 0),
     ]),
     ("Output", "OUTPUT", [
         ("audit report", 0), ("author fix list", 0),

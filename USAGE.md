@@ -71,6 +71,7 @@ Commands are optional — the agent infers the mode from your input. For precise
 | `strength <paper+claim>` | Evidence-strength grading (HIGH/MEDIUM/LOW/UNKNOWN) |
 | `claims <file>` | Claim–evidence ledger: support/oppose counts and strength per claim |
 | `retract <DOI>` | Retraction/correction lookup (already part of every `check`) |
+| `fulltext <DOI>` | Locate legally available full text; names the institutional route when there is none |
 | `versions <arXiv or DOI>` | Preprint ↔ published-version resolver, with a switch recommendation |
 | `export-xml <selected>` | EndNote XML export — audit verdicts travel into the Research Notes field |
 
