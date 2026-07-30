@@ -84,6 +84,7 @@ python scripts/lit_api.py search "query keywords" --limit 10 --year 2020-   # �
 python scripts/lit_api.py snowball "DOI:10.1234/abc" --direction both       # 引文滾雪球：citations=誰引它(追新) references=它引誰(追經典)
 python scripts/lit_api.py arxiv "query" --limit 10                          # 預印本
 python scripts/lit_api.py verify --title "..." --authors "A; B" --year 2021 # 驗證一筆引用
+python scripts/lit_api.py verify-batch refs.json --workers 4                # 整份列表一次驗證（快 2 倍以上，見下）
 python scripts/lit_api.py paper "DOI:10.1234/abc"                           # 單篇詳情含摘要
 python scripts/lit_api.py batch "DOI:10.1/a" "DOI:10.2/b" "ARXIV:2301.1"    # 一次抓多篇詳情(查整份引用列表時用，省呼叫)
 python scripts/lit_api.py crossref-doi 10.1234/abc                          # DOI → 權威書目
@@ -116,7 +117,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 從文章的參考文獻列表(或文內引用)逐筆處理：
 
 0. **中文文獻**：標題為中文、或明顯是台灣/中國期刊與學位論文者，這些 API 查不到。若環境有 Google Scholar 搜尋工具(如 MCP 的 google-scholar search_papers)，用**原文標題**(不要翻譯)加作者查存在性：查到 → 標註「Google Scholar 查證，信心中等」(GS 含非正式來源，書目欄位仍不可靠，只做存在性與粗略比對)；查無、或環境沒有 GS 工具 → 列入「需人工查核」區。無論如何**禁止用英譯標題去英文資料庫硬查**——會產生錯誤配對。
-1. **存在性**:`verify --title "..." --authors "..." --year N`。看 `verdict_hint` 與 `candidates`:
+1. **存在性**：**整份列表用 `verify-batch`，不要逐筆開行程**——把引用整理成 `[{n, title, authors, year}, ...]` 的 JSON 後一次跑完（實測比逐筆快兩倍以上：逐筆每次都付一次 Python 啟動成本，且兩個服務的等待完全不重疊）。單筆才用 `verify --title "..." --authors "..." --year N`。兩者判定邏輯共用同一份程式碼。看 `verdict_hint` 與 `candidates`:
    - `found`：存在，進下一步。
    - `similar_found`：標題相近但有出入——人工比對候選，可能是版本差異(preprint vs 正式版)、副標題被省略、也可能是真的寫錯，判讀後歸類。
    - `not_found`：換一次查詢再試(去掉副標題、修正明顯錯字)；仍查無 → 標記「🚫 查無此文獻」。**查不到 ≠ 不存在**(書籍章節、非英文、很新的文章都可能查不到)，報告要**列名實際查過的來源**(verify 查的是 Crossref + Semantic Scholar；若另用其他工具補查也一併列名)寫「X + Y 皆查無」，而不是籠統寫「三庫」或斷言它是捏造的；若 verify 回 `partial_failure`(來源查詢失敗)，那是「查詢未完成」不是「查無」，重試或標註後再下結論；但若標題含糊、作者查無此人、年份也對不上，可註明「疑似幻覺引用，建議優先人工確認」。環境有網頁搜尋工具時，對疑似幻覺引用值得再做一層交叉確認(搜期刊名+卷期驗證該期刊/該期是否真的存在)，能把「查無」升級成更有力的證據。
@@ -194,7 +195,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 50 個凍結案例，不打 API，秒級
+python evals/test_regression.py     # 60 個凍結案例，不打 API，秒級
 python evals/mutation_check.py      # 驗證測試本身有偵測力(9 個突變都須被抓到)
 ```
 

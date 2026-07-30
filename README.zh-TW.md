@@ -100,7 +100,7 @@ CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 50 個凍結案例，不打網路，秒級跑完
+python evals/test_regression.py     # 60 個凍結案例，不打網路，秒級跑完
 python evals/mutation_check.py      # 把 9 個已修的 bug 塞回去，每個都必須被抓到
 ```
 

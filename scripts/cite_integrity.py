@@ -25,7 +25,10 @@ HEADING_RE = re.compile(
     r"(?m)^[\s#\d.、]*(參考文獻|参考文献|References|REFERENCES|Bibliography|文獻目錄)\s*[::]?\s*$")
 HEADING_LOOSE_RE = re.compile(r"(參考文獻|参考文献|References|REFERENCES|Bibliography|文獻目錄)")
 CITE_RE = re.compile(r"\[(\d{1,3}(?:\s*[,,\-–—]\s*\d{1,3})*)\]")
-REF_LINE_RE = re.compile(r"^\s*\[(\d{1,3})\]", re.MULTILINE)
+# 參考文獻條目：支援 [1] 與 Vancouver/AMA 的 "1." "1)" 樣式。
+# 醫學與藥學期刊幾乎一律用 Vancouver；只認 [n] 會讓列表解析成 0 筆，
+# 然後把全部文內引用誤報成「引了沒列」——沉默且自信的錯誤答案。
+REF_LINE_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|(\d{1,3})[.)]\s)", re.MULTILINE)
 
 
 def fail(message, as_json=False, **extra):
@@ -100,7 +103,7 @@ def main():
     for m in CITE_RE.finditer(body):
         cited.update(expand(m.group(1), dropped_tokens))
 
-    listed_seq = [int(m.group(1)) for m in REF_LINE_RE.finditer(reflist)]
+    listed_seq = [int(m.group(1) or m.group(2)) for m in REF_LINE_RE.finditer(reflist)]
     listed = set(listed_seq)
     dupes = sorted({n for n in listed_seq if listed_seq.count(n) > 1})
 
@@ -111,6 +114,10 @@ def main():
 
     # 全文都沒有 [n]：可能是 APA 作者-年份格式或空檔案——不可回報「全部通過」
     no_numeric = not cited and not listed
+    # 文內有引用、卻一筆列表條目都解析不到：這是「列表格式不支援」的明確指紋
+    # （如 EndNote 輸出的 Word 自動編號清單，編號不在文字節點裡）。
+    # 此時把所有引用報成「引了沒列」是自信的錯誤答案，必須改判為無法核對。
+    unparsable_list = bool(cited) and not listed and split_at is not None
     apa_hits = len(re.findall(r"\([A-Z][A-Za-zÀ-ɏ'’\-]+(?:\s+(?:et al\.|and|&|&amp;)"
                               r"[^)]{0,40})?,?\s*(?:19|20)\d{2}[a-z]?\)", text))
     result = {
@@ -119,13 +126,21 @@ def main():
         "refs_heading_match": heading_mode if split_at is not None else None,
         "unparsed_citation_tokens": dropped_tokens,
         "numeric_citations_found": not no_numeric,
+        "reference_list_parsed": not unparsable_list,
         "cited_count": len(cited),
         "listed_count": len(listed),
-        "cited_not_listed": sorted(cited - listed),
-        "listed_not_cited": sorted(listed - cited),
+        # 列表解析失敗時不得輸出比對清單——那會是一整份假的「引了沒列」
+        "cited_not_listed": [] if unparsable_list else sorted(cited - listed),
+        "listed_not_cited": [] if unparsable_list else sorted(listed - cited),
         "duplicate_ref_numbers": dupes,
         "numbering_gaps_in_list": gaps,
     }
+    if unparsable_list:
+        result["unsupported_style_note"] = (
+            f"找到參考文獻標題與 {len(cited)} 個文內引用，但一筆列表條目都解析不到。"
+            "本工具的列表條目需以 [1] 或 1. / 1) 開頭；若你的列表是 Word 自動編號清單，"
+            "編號不存在於文字中因而無法解析。**無法核對，此結果不代表引用無誤**——"
+            "請把列表改為文字編號後重跑，或人工核對。")
     if no_numeric:
         result["unsupported_style_note"] = (
             f"全文查無數字式引用([1]、[2])；偵測到 {apa_hits} 處疑似作者-年份(APA)引用。"
@@ -135,13 +150,13 @@ def main():
             "或使用本工具不支援的引用樣式(如作者-年份)。**此結果不代表引用無誤**。")
     issues = (result["cited_not_listed"] or result["listed_not_cited"]
               or dupes or gaps or not result["refs_heading_found"] or no_numeric
-              or dropped_tokens)
+              or dropped_tokens or unparsable_list)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=1))
     else:
         print(f"檔案：{args.file}")
-        if no_numeric:
+        if no_numeric or unparsable_list:
             print("⚠️ " + result["unsupported_style_note"])
         if not result["refs_heading_found"]:
             print("⚠️ 找不到參考文獻標題(參考文獻/References…)，整份當正文處理——結果不可靠")
@@ -154,7 +169,7 @@ def main():
             print(f"⚠️ 無法解析的引用標記(未計入):{dropped_tokens}")
         if heading_mode == "loose":
             print("⚠️ 參考文獻標題不是自成一行(以寬鬆比對切分)——切分點可能落錯，結果需人工確認")
-        print("結論：" + ("⚠️ 無法核對(見上方說明)" if no_numeric
+        print("結論：" + ("⚠️ 無法核對(見上方說明)" if no_numeric or unparsable_list
                         else "❌ 有問題，見上" if issues else "✅ 三向核對全部通過"))
 
     sys.exit(1 if issues else 0)

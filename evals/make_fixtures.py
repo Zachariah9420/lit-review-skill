@@ -48,6 +48,17 @@ w("dup_refs.md", "# Draft\n\n引用 [1] [2] [3]。\n\n## References\n\n"
                  "[1] A.\n[2] B.\n[3] C.\n[3] C duplicate.\n")
 w("overcite.md", "# Draft\n\n引用 [1] [2] 以及不存在的 [100]。\n\n## References\n\n"
                  + "".join(f"[{i}] Author {i}.\n" for i in range(1, 11)))
+w("vancouver.md", "# Draft\n\n本研究參考多篇文獻[1][2]，其中[5]與[7]為關鍵。另見[3][4]。\n\n"
+                  "## References\n\n"
+                  "1. Zinman B, et al. Empagliflozin. N Engl J Med. 2015;373(22):2117-2128.\n"
+                  "2. Jefferson T, et al. Neuraminidase inhibitors. Cochrane. 2014;(4):CD008965.\n"
+                  "3. McMurray JJV, et al. Dapagliflozin. N Engl J Med. 2019;381:1995-2008.\n"
+                  "4. Bombardier C, et al. Rofecoxib vs naproxen. N Engl J Med. 2000;343:1520-1528.\n"
+                  "6. Extra Author. Uncited entry. J Test. 2020;1:1-2.\n")
+w("unnumbered_list.md", "# Draft\n\n本研究引用多篇文獻[1][2]，並參考[3]。\n\n## References\n\n"
+                        "Zinman B, et al. Empagliflozin. N Engl J Med. 2015;373(22):2117-2128.\n"
+                        "Jefferson T, et al. Neuraminidase inhibitors. Cochrane. 2014.\n"
+                        "McMurray JJV, et al. Dapagliflozin. N Engl J Med. 2019;381:1995-2008.\n")
 w("fake.docx", "this is plain text pretending to be a docx\n")
 
 # --- 真 docx：內含 XML 字元參照(Word 就是這樣寫 en-dash 與引號的)---

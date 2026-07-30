@@ -135,7 +135,7 @@ Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 50 frozen cases, no network, seconds
+python evals/test_regression.py     # 60 frozen cases, no network, seconds
 python evals/mutation_check.py      # re-introduces 9 fixed bugs; each must be caught
 ```
 

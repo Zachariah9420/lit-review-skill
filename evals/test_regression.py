@@ -363,6 +363,85 @@ def test_integrity_parsing():
 # ─────────────────────────────────────────────────────────────
 
 
+
+
+def test_vancouver_and_list_guard():
+    """PH-*（藥學 fresh session 實測發現）：醫藥期刊用 Vancouver 列表（1. Author），
+    只認 [n] 會讓列表解析成 0 筆，然後把全部引用誤報成「引了沒列」——沉默的錯誤答案。"""
+    code, d = integrity_json("vancouver.md")
+    check("PH-01", "Vancouver 列表（1. / 1)）可正確解析",
+          d.get("listed_count") == 5 and d.get("reference_list_parsed") is True,
+          f"listed={d.get('listed_count')} parsed={d.get('reference_list_parsed')}")
+    check("PH-02", "Vancouver 格式下仍正確抓出引了沒列／列了沒引",
+          d.get("cited_not_listed") == [5, 7] and d.get("listed_not_cited") == [6],
+          f"cited_not_listed={d.get('cited_not_listed')} listed_not_cited={d.get('listed_not_cited')}")
+
+    # 列表存在但無文字編號（Word 自動編號）→ 必須改判無法核對，不得輸出假缺漏
+    code, d = integrity_json("unnumbered_list.md")
+    check("PH-03", "列表無法解析時改判「無法核對」而非報一整份假的引了沒列",
+          d.get("reference_list_parsed") is False and d.get("cited_not_listed") == []
+          and "unsupported_style_note" in d and code != 0,
+          f"parsed={d.get('reference_list_parsed')} cited_not_listed={d.get('cited_not_listed')}")
+
+
+def test_retraction_fallback():
+    """PH-04：2010 年前的撤稿/關切聲明常以獨立文章發表而未設 Crossref updates 關聯
+    （VIGOR/rofecoxib 就是），只查 updates 會回傳誤導性的「乾淨」。"""
+    src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
+    fn = src[src.index("def cmd_retract"):src.index("def _load_entries")]
+    check("PH-04", "retract 在 updates 無記錄時以標題搜尋補查",
+          "title_search_fallback" in fn and "query.bibliographic" in fn)
+    check("PH-05", "標題搜尋發現的通知標為「未經關聯確認」而非直接紅色警示",
+          "未經 updates 關聯確認" in fn)
+    check("PH-06", "無記錄時附年代覆蓋警語（綠勾在舊文獻沒有證據力）",
+          "coverage_caveat" in fn and "2010" in fn)
+
+
+def test_rate_limiter_concurrency():
+    """併行時速率限制仍須成立——批次模式的正確性靠這個。
+
+    舊版是「讀 _last_call → sleep → 更新」，兩條執行緒會讀到同一個舊值而同時發出
+    請求，等於沒有節流（會被 API 封）。改成在鎖內預約時段後，每條線拿到的
+    發送時刻必須互相間隔至少 min_interval。此測試不打 API，純驗排程邏輯。
+    """
+    import threading
+    la._last_call.clear()
+    INTERVAL, N = 0.05, 12
+    slots, lock = [], threading.Lock()
+
+    def worker():
+        wait = la._reserve_slot("test_bucket", INTERVAL)
+        with lock:
+            slots.append(wait)
+
+    ts = [threading.Thread(target=worker) for _ in range(N)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    ordered = sorted(slots)
+    gaps = [round(b - a, 4) for a, b in zip(ordered, ordered[1:])]
+    ok = len(slots) == N and all(g >= INTERVAL - 0.001 for g in gaps)
+    check("PERF-01", "併行預約的發送時段互相間隔 ≥ min_interval（節流不因併行失效）",
+          ok, f"間隔={gaps[:5]}… 期望每個 ≥{INTERVAL}")
+    la._last_call.clear()
+
+    # 單執行緒下第一次呼叫不應被無謂延遲
+    la._last_call.clear()
+    check("PERF-02", "首次呼叫無等待（冷啟動不該付節流成本）",
+          la._reserve_slot("fresh_bucket", 1.0) <= 0.001)
+    la._last_call.clear()
+
+
+def test_verify_one_shared_logic():
+    """verify 與 verify-batch 必須共用同一份判定邏輯，不得各寫一份而漂移。"""
+    src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
+    check("PERF-03", "cmd_verify 呼叫 verify_one（不重新實作）",
+          "def cmd_verify(args)" in src and "verify_one(args.title" in src)
+    check("PERF-04", "verify-batch 也走 verify_one",
+          "verify_one(it.get(" in src)
+
+
 def test_entity_decoding():
     """NS-04（全新 session 實測發現）：Crossref 的期刊名帶 &amp;，原樣寫進 RIS 會讓
     使用者匯入 EndNote 後看到字面的 &amp;。交付物不得被上游的 HTML entity 污染。"""
@@ -428,8 +507,10 @@ def main():
     ap.add_argument("-k", "--filter", default="")
     args = ap.parse_args()
 
-    suites = [test_title_similarity, test_author_overlap, test_identity_gate,
+    suites = [test_vancouver_and_list_guard, test_retraction_fallback,
+              test_title_similarity, test_author_overlap, test_identity_gate,
               test_crash_paths, test_absence_semantics, test_integrity_parsing,
+              test_rate_limiter_concurrency, test_verify_one_shared_logic,
               test_entity_decoding, test_chinese_punctuation,
               test_fulltext_boundary, test_output_hardening]
     for s in suites:

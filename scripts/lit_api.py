@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -40,6 +41,7 @@ ARXIV_BASE = "https://export.arxiv.org/api/query"
 OPENALEX_BASE = "https://api.openalex.org"
 
 _last_call = {}
+_rate_lock = threading.Lock()
 
 
 def load_dotenv():
@@ -62,9 +64,22 @@ def load_dotenv():
             pass
 
 
+def _reserve_slot(bucket, min_interval):
+    """在鎖內預約下一個發送時段，回傳需要等待的秒數（實際 sleep 在鎖外做）。
+
+    多執行緒同時呼叫時，若只是「讀 _last_call → sleep → 更新」，兩條線會讀到
+    同一個舊值而同時發出請求，等於沒有節流。預約制讓每條線各自拿到不重疊的時段。
+    """
+    with _rate_lock:
+        now = time.time()
+        earliest = max(now, _last_call.get(bucket, 0.0) + min_interval)
+        _last_call[bucket] = earliest
+        return earliest - now
+
+
 def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, data=None):
-    """帶速率限制與 429/5xx 退避重試的 GET(data 給值時為 POST)。"""
-    wait = min_interval - (time.time() - _last_call.get(bucket, 0.0))
+    """帶速率限制與 429/5xx 退避重試的 GET(data 給值時為 POST)。執行緒安全。"""
+    wait = _reserve_slot(bucket, min_interval)
     if wait > 0:
         time.sleep(wait)
     req = urllib.request.Request(url, data=data,
@@ -72,7 +87,10 @@ def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, d
     last_err = None
     for attempt in range(retries + 1):
         try:
-            _last_call[bucket] = time.time()
+            if attempt:      # 重試也要重新預約時段，否則退避後可能與別的執行緒撞在一起
+                w = _reserve_slot(bucket, min_interval)
+                if w > 0:
+                    time.sleep(w)
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
@@ -263,14 +281,14 @@ def crossref_search(title, rows=5):
     if mailto:
         params["mailto"] = mailto
     url = CROSSREF_BASE + "/works?" + urllib.parse.urlencode(params)
-    data = json.loads(http_get(url, crossref_headers(), 1.0, "crossref"))
+    data = json.loads(http_get(url, crossref_headers(), crossref_interval(), "crossref"))
     return [norm_crossref(it) for it in data.get("message", {}).get("items", [])]
 
 
 def cmd_crossref_doi(args):
     url = CROSSREF_BASE + "/works/" + urllib.parse.quote(args.doi, safe="/")
     try:
-        data = json.loads(http_get(url, crossref_headers(), 1.0, "crossref"))
+        data = json.loads(http_get(url, crossref_headers(), crossref_interval(), "crossref"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             print(json.dumps({"error": "not_found", "doi": args.doi}, ensure_ascii=False))
@@ -592,7 +610,7 @@ def cmd_retract(args):
             params["mailto"] = mailto
         url = CROSSREF_BASE + "/works?" + urllib.parse.urlencode(params)
         try:
-            data = json.loads(http_get(url, crossref_headers(), 1.0, "crossref"))
+            data = json.loads(http_get(url, crossref_headers(), crossref_interval(), "crossref"))
             notices = []
             for it in data.get("message", {}).get("items", []):
                 for u in it.get("update-to", []):
@@ -604,13 +622,68 @@ def cmd_retract(args):
                             "notice_title": (it.get("title") or [None])[0],
                             "date": (u.get("updated") or {}).get("date-parts", [[None]])[0],
                         })
+            # updates 關聯之外，再用標題搜尋補一路：2010 年前的通知（以及某些
+            # 出版社的習慣）常把撤稿/關切聲明當成獨立文章發表而不設 updates 關聯。
+            # VIGOR/rofecoxib（NEJM 2000）就是這樣：兩份 Expression of Concern
+            # 明明在 Crossref，updates 查詢卻一無所獲，回傳誤導性的「乾淨」。
+            if not notices:
+                try:
+                    meta = json.loads(http_get(
+                        CROSSREF_BASE + "/works/" + urllib.parse.quote(doi, safe="/"),
+                        crossref_headers(), crossref_interval(), "crossref"))
+                    orig_title = ((meta.get("message", {}).get("title") or [""])[0] or "")
+                    if orig_title:
+                        q = {"query.bibliographic": orig_title[:120], "rows": "8"}
+                        if mailto:
+                            q["mailto"] = mailto
+                        cand = json.loads(http_get(
+                            CROSSREF_BASE + "/works?" + urllib.parse.urlencode(q),
+                            crossref_headers(), crossref_interval(), "crossref"))
+                        for it in cand.get("message", {}).get("items", []):
+                            t = ((it.get("title") or [""])[0] or "")
+                            tl = t.lower()
+                            if not re.match(r"^\s*(retraction|expression of concern|"
+                                            r"withdrawn|editorial expression)", tl):
+                                continue
+                            # 通知的標題必須確實提到原文（避免撈到別篇的撤稿通知）
+                            stripped = re.sub(r"^[^:：]{0,60}[:：]\s*", "", t)
+                            if title_sim(stripped, orig_title) < 0.5 and \
+                                    norm_title(orig_title)[:40] not in norm_title(t):
+                                continue
+                            notices.append({
+                                "type": ("expression_of_concern" if "concern" in tl
+                                         else "retraction"),
+                                "label": "由標題搜尋發現（未經 Crossref updates 關聯確認）",
+                                "notice_doi": it.get("DOI"), "notice_title": t,
+                                "date": ((it.get("issued") or {}).get("date-parts")
+                                         or [[None]])[0],
+                                "detection": "title_search_fallback",
+                            })
+                except OSError:
+                    pass
             severe = any((n.get("type") or "").lower() in
                          ("retraction", "retraction_notice", "removal", "withdrawal",
                           "partial_retraction", "expression_of_concern") for n in notices)
-            status = ("🚨 有撤稿/疑慮記錄，不可引用，詳見 notices" if severe
-                      else ("⚠️ 有更正記錄(correction/erratum)，引用前確認更正內容" if notices
-                            else "✅ Crossref 無已知撤稿/更正記錄"))
-            out.append({"doi": doi, "status": status, "notices": notices})
+            fallback_only = notices and all(n.get("detection") == "title_search_fallback"
+                                            for n in notices)
+            if severe:
+                status = ("⚠️ 疑似有撤稿/關切聲明（由標題搜尋發現，未經 updates 關聯確認）"
+                          "——請開啟 notices 中的通知確認是否指向本文"
+                          if fallback_only else "🚨 有撤稿/疑慮記錄，不可引用，詳見 notices")
+            elif notices:
+                status = "⚠️ 有更正記錄(correction/erratum)，引用前確認更正內容"
+            else:
+                # 2010 年前的通知關聯覆蓋不佳，綠勾在此年代沒有證據力
+                yr = None
+                m = re.search(r"\b(19|20)\d{2}\b", doi)
+                status = "✅ Crossref 無已知撤稿/更正記錄"
+            rec = {"doi": doi, "status": status, "notices": notices}
+            if not notices:
+                rec["coverage_caveat"] = (
+                    "Crossref 的撤稿關聯對 2010 年前的文獻覆蓋不佳（部分出版社把撤稿/"
+                    "關切聲明當成獨立文章發表而未設關聯）。舊文獻的「無記錄」證據力弱，"
+                    "藥物安全等高風險引用建議另以 Retraction Watch 網站複核。")
+            out.append(rec)
         except OSError as e:
             out.append({"doi": doi, "status": "❓ 查詢失敗", "error": str(e)})
     out.append({"_note": "Crossref 撤稿覆蓋不完備(尤其非英文期刊)：無記錄 ≠ 保證沒事；"
@@ -870,64 +943,144 @@ def decide_verdict(candidates, *, year_supplied=False):
     return "not_found", basis
 
 
+def crossref_interval():
+    # 有 mailto 就進 polite pool，Crossref 對此寬鬆得多（其文件的參考值遠高於 3 rps）；
+    # 沒有 mailto 時保守維持 1 rps，不佔用公共池。
+    return 0.34 if os.environ.get("CROSSREF_MAILTO") else 1.0
+
+
+def verify_one(title, authors, year):
+    """單筆驗證的純邏輯（不印出、不 exit），供 verify 與 verify-batch 共用。"""
+    result = {"query": {"title": title, "authors": authors or None, "year": year},
+              "candidates": []}
+    if not has_latin(title):
+        result["verdict_hint"] = "unsupported_title"
+        result["absence_note"] = ("標題正規化後無可比對的拉丁字元（可能為中文/日文/純符號標題）："
+                                  "本工具的相似度比對僅支援拉丁字母標題，無法判定。"
+                                  "中文文獻請用 Google Scholar 或華藝等中文索引人工查核。")
+        return result
+
+    def fetch_crossref():
+        return [dict(c, match=score_candidate(c, title, authors, year))
+                for c in crossref_search(title, rows=4)]
+
+    def fetch_s2():
+        url = S2_BASE + "/paper/search/match?" + urllib.parse.urlencode(
+            {"query": title, "fields": S2_FIELDS})
+        data = json.loads(http_get(url, s2_headers(), s2_interval(), "s2"))
+        cands = []
+        for p in data.get("data") or []:
+            c = norm_s2(p)
+            cands.append(dict(c, match=score_candidate(c, title, authors, year)))
+        return cands
+
+    out = {}
+
+    def run(name, fn):
+        try:
+            out[name] = fn()
+        except urllib.error.HTTPError as e:
+            if name == "s2" and e.code == 404:
+                out[name] = []            # S2 match 端點查無時回 404，那是查無不是失敗
+            else:
+                out[name + "_error"] = str(e)
+        except Exception as e:
+            out[name + "_error"] = str(e)
+
+    threads = [threading.Thread(target=run, args=(n, f))
+               for n, f in (("crossref", fetch_crossref), ("s2", fetch_s2))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=90)
+
+    for name in ("crossref", "s2"):
+        result["candidates"].extend(out.get(name) or [])
+        if out.get(name + "_error"):
+            result[name + "_error"] = out[name + "_error"]
+
+    result["candidates"] = rank_candidates(result["candidates"])
+    verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(year))
+    if basis:
+        result["identity_basis"] = basis
+    provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
+    if verdict == "not_found" and provider_errors:
+        verdict = "partial_failure"
+        result["absence_note"] = ("查詢未完整完成（" + ", ".join(provider_errors)
+                                  + " 見上），不可解讀為查無；請稍後重試或人工查證")
+    elif verdict == "not_found":
+        result["absence_note"] = ("實際查核來源（Crossref + Semantic Scholar）皆無合理候選；"
+                                  "書籍章節、非英語文獻、產業論文集常不在這兩個索引中，查無 ≠ 不存在")
+    result["verdict_hint"] = verdict
+    return result
+
+
+def cmd_verify_batch(args):
+    """一次驗證多筆引用，跨引用併行。
+
+    整份參考文獻列表逐筆開行程是最慢的用法：每筆都付一次 Python 啟動成本，
+    而且兩個服務的等待完全不重疊。這裡在單一行程內用工作執行緒併行，
+    速率限制仍由 _reserve_slot 依服務各自守住（不會因為併行就超速）。
+    """
+    try:
+        items = json.load(open(args.file, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(json.dumps({"error": "INVALID_INPUT", "message": str(e)}, ensure_ascii=False))
+        sys.exit(1)
+    if isinstance(items, dict):
+        items = items.get("refs") or items.get("references") or items.get("items") or []
+    if not isinstance(items, list) or not items:
+        print(json.dumps({"error": "INVALID_INPUT",
+                          "message": "需要一個陣列，每筆含 title（可選 authors/year/n）"},
+                         ensure_ascii=False))
+        sys.exit(1)
+
+    results = [None] * len(items)
+    lock = threading.Lock()
+    idx = [0]
+
+    def worker():
+        while True:
+            with lock:
+                if idx[0] >= len(items):
+                    return
+                i = idx[0]
+                idx[0] += 1
+            it = items[i] or {}
+            au = it.get("authors")
+            if isinstance(au, str):
+                au = [a.strip() for a in au.split(";") if a.strip()]
+            r = verify_one(it.get("title") or "", au or [], it.get("year"))
+            if it.get("n") is not None:
+                r["n"] = it["n"]
+            results[i] = r
+
+    n_workers = max(1, min(args.workers, len(items)))
+    ts = [threading.Thread(target=worker) for _ in range(n_workers)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    summary = {}
+    for r in results:
+        summary[r["verdict_hint"]] = summary.get(r["verdict_hint"], 0) + 1
+    print(json.dumps({"count": len(results), "summary": summary, "results": results},
+                     ensure_ascii=False, indent=1))
+    if any(r["verdict_hint"] == "partial_failure" for r in results):
+        sys.exit(1)
+
+
 def cmd_verify(args):
     if not (args.title or "").strip():
         print(json.dumps({"error": "INVALID_INPUT", "message": "--title 不可為空"},
                          ensure_ascii=False))
         sys.exit(1)
-    if not has_latin(args.title):
-        print(json.dumps({
-            "verdict_hint": "unsupported_title",
-            "absence_note": ("標題正規化後無可比對的拉丁字元(可能為中文/日文/純符號標題):"
-                             "本工具的相似度比對僅支援拉丁字母標題，無法判定。"
-                             "中文文獻請用 Google Scholar 或華藝等中文索引人工查核。"),
-        }, ensure_ascii=False, indent=1))
-        sys.exit(1)
     authors = [a.strip() for a in (args.authors or "").split(";") if a.strip()]
-    result = {"query": {"title": args.title, "authors": authors or None, "year": args.year},
-              "candidates": []}
-
-    # Crossref 書目搜尋
-    try:
-        for c in crossref_search(args.title, rows=4):
-            c["match"] = score_candidate(c, args.title, authors, args.year)
-            result["candidates"].append(c)
-    except Exception as e:
-        result["crossref_error"] = str(e)
-
-    # Semantic Scholar 標題精確配對(有摘要，供內容查核)
-    try:
-        url = S2_BASE + "/paper/search/match?" + urllib.parse.urlencode(
-            {"query": args.title, "fields": S2_FIELDS})
-        data = json.loads(http_get(url, s2_headers(), s2_interval(), "s2"))
-        for p in data.get("data") or []:
-            c = norm_s2(p)
-            c["match"] = score_candidate(c, args.title, authors, args.year)
-            result["candidates"].append(c)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            result["s2_error"] = str(e)
-    except Exception as e:
-        result["s2_error"] = str(e)
-
-    result["candidates"] = rank_candidates(result["candidates"])
-    verdict, basis = decide_verdict(result["candidates"], year_supplied=bool(args.year))
-    if basis:
-        result["identity_basis"] = basis
-
-    # 「查無」是研究結論，只有查詢真的完成才可用；來源掛掉不得偽裝成查無
-    provider_errors = [k for k in ("crossref_error", "s2_error") if result.get(k)]
-    if verdict == "not_found" and provider_errors:
-        verdict = "partial_failure"
-        result["absence_note"] = ("查詢未完整完成(" + ", ".join(provider_errors)
-                                  + " 見上)，不可解讀為查無；請稍後重試或人工查證")
-    elif verdict == "not_found":
-        result["absence_note"] = ("實際查核來源(Crossref + Semantic Scholar)皆無合理候選；"
-                                  "書籍章節、非英語文獻、產業論文集常不在這兩個索引中，查無 ≠ 不存在")
-    result["verdict_hint"] = verdict
+    result = verify_one(args.title, authors, args.year)
     print(json.dumps(result, ensure_ascii=False, indent=1))
-    # 查詢未完成必須讓自動化偵測得到：exit 0 只代表「查完且有結論」
-    if verdict == "partial_failure":
+    # 查詢未完成或標題無法比對，必須讓自動化偵測得到：exit 0 只代表「查完且有結論」
+    if result["verdict_hint"] in ("partial_failure", "unsupported_title"):
         sys.exit(1)
 
 
@@ -1029,6 +1182,11 @@ def main():
     p.add_argument("--authors", help="分號分隔，如 'Smith, J.; Chen, L.'")
     p.add_argument("--year", type=int)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("verify-batch", help="一次驗證多筆引用（JSON 陣列，跨引用併行）")
+    p.add_argument("file", help="JSON：[{title, authors?, year?, n?}, ...]")
+    p.add_argument("--workers", type=int, default=4, help="併行數（預設 4）")
+    p.set_defaults(func=cmd_verify_batch)
 
     p = sub.add_parser("paper", help="取單篇詳細資料含摘要")
     p.add_argument("id", help="DOI:10.x/y | ARXIV:2301.12345 | S2 paperId")

@@ -3,7 +3,7 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 50 frozen cases
+python evals/test_regression.py     # 60 frozen cases
 python evals/mutation_check.py      # 9 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
@@ -40,8 +40,7 @@ English and Chinese versions still have the same section count.
 python evals/doc_scan.py
 ```
 
-It has caught, in one pass: five documents claiming 41 test cases when there were
-50, a diagram advertising 21 commands when the table listed 20, and `fulltext`
+It has caught, in one pass: five documents claiming 50 test cases when there were 60, a diagram advertising 21 commands when the table listed 20, and `fulltext`
 missing from both usage guides.
 
 ## zip_check.py
