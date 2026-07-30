@@ -71,6 +71,9 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 
 ## 工具
 
+**執行位置**：以下指令假設 cwd 在 skill 目錄。從別處執行請用絕對路徑，例如
+`python ~/.claude/skills/lit-review/scripts/lit_api.py verify --title "..."`（Windows PowerShell 用 `$env:USERPROFILE\.claude\skills\lit-review\scripts\lit_api.py`）。
+
 所有 API 呼叫都用 `scripts/lit_api.py`(純 Python 標準函式庫，無需安裝任何套件)，不要自己手刻 HTTP 請求——腳本已內建速率限制與 429 重試，手刻容易被封。
 
 ```bash
@@ -92,7 +95,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 
 輸出皆為 JSON(export 為純文字)。API 細節、欄位意義、涵蓋範圍限制見 [references/api-notes.md](references/api-notes.md)——第一次用或遇到怪錯誤時讀它。
 
-金鑰與 email 放使用者專案的 `.env`(`S2_API_KEY`、`CROSSREF_MAILTO`)，腳本會自動讀；兩者都是選填，沒有也能跑，只是速率較低。無 S2 key 時 Semantic Scholar 常回 429，腳本會自動退避重試，連續呼叫多筆時請耐心等，不要因為慢就繞過腳本。
+金鑰與 email 放 `.env`：腳本**先找 cwd 的 `.env`，再找 `~/.env`**（家目錄那份是跨專案的全域備援——在別的專案目錄工作時靠它，否則會退回無金鑰的共享池而頻繁 429）。鍵名(`S2_API_KEY`、`CROSSREF_MAILTO`)，腳本會自動讀；兩者都是選填，沒有也能跑，只是速率較低。無 S2 key 時 Semantic Scholar 常回 429，腳本會自動退避重試，連續呼叫多筆時請耐心等，不要因為慢就繞過腳本。
 
 ## 模式 A：找文獻
 

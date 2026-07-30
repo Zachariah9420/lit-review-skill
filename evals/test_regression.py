@@ -185,6 +185,36 @@ def test_identity_gate():
           verdict != "not_found" and (basis or {}).get("match_path") in ("author", "title"),
           f"verdict={verdict} path={(basis or {}).get('match_path')}")
 
+
+    # NS-01（全新 session 實測發現）：同一篇論文的 Crossref 與 S2 兩筆候選，
+    # 是「跨來源互相印證」而非「配對有歧義」。舊版直接比 candidates[0] vs [1]，
+    # 讓一筆完全正確的引用被判 similar_found，理由還是錯的。
+    cr = {"source": "crossref", "title": "Vapour phase soldering (VPS) technology: a review",
+          "year": 2019, "authors": ["Illés, Balázs", "Géczy, Attila"],
+          "doi": "10.1108/ssmt-10-2018-0042"}
+    s2 = {"source": "semanticscholar", "title": "Vapour phase soldering (VPS) technology: A review",
+          "year": 2019, "authors": ["B. Illés", "A. Géczy"],
+          "doi": "10.1108/SSMT-10-2018-0042"}   # 同 DOI，僅大小寫不同
+    _, verdict, basis = judge([cr, s2], title="Vapour phase soldering (VPS) technology: A review",
+                              authors=["Illés", "Géczy"], year=2019)
+    check("NS-01", "同一篇的跨來源候選不得被判為歧義（應判 found）",
+          verdict == "found" and not (basis or {}).get("ambiguous"),
+          f"verdict={verdict} ambiguous={(basis or {}).get('ambiguous')} "
+          f"reasons={(basis or {}).get('downgrade_reasons')}")
+    check("NS-02", "跨來源印證要記錄在 identity_basis",
+          (basis or {}).get("cross_source_corroboration") == 1,
+          f"corroboration={(basis or {}).get('cross_source_corroboration')}")
+
+    # NS-03：真正不同的兩篇論文(同名但不同 DOI，如不同期刊的 Editorial)分數
+    # 接近時，歧義判定仍須生效——修跨來源印證不得把這道防線一起關掉
+    p1 = {"title": "Editorial", "year": 2020, "authors": ["A. One"], "doi": "10.1/a"}
+    p2 = {"title": "Editorial", "year": 2020, "authors": ["B. Two"], "doi": "10.2/b"}
+    _, verdict, basis = judge([p1, p2], title="Editorial",
+                              authors=["One"], year=2020)
+    check("NS-03", "不同文獻分數接近時歧義判定仍生效",
+          (basis or {}).get("ambiguous") is True,
+          f"ambiguous={(basis or {}).get('ambiguous')} verdict={verdict}")
+
     # 完全不相關的候選仍須 not_found
     _, verdict, _ = judge([{"title": "Deep Residual Learning", "year": 2016,
                             "authors": ["K. He"]}],
@@ -332,6 +362,19 @@ def test_integrity_parsing():
 # 6. 輸出格式的健壯性
 # ─────────────────────────────────────────────────────────────
 
+
+def test_entity_decoding():
+    """NS-04（全新 session 實測發現）：Crossref 的期刊名帶 &amp;，原樣寫進 RIS 會讓
+    使用者匯入 EndNote 後看到字面的 &amp;。交付物不得被上游的 HTML entity 污染。"""
+    fake = {"container-title": ["Soldering &amp; Surface Mount Technology"],
+            "title": ["A &amp; B: a study"], "publisher": "Emerald &amp; Co",
+            "issued": {"date-parts": [[2019]]}, "DOI": "10.1/x", "author": []}
+    n = la.norm_crossref(fake)
+    check("NS-04", "Crossref 的 HTML entity 在正規化時解碼",
+          "&" in (n["container"] or "") and "&amp;" not in (n["container"] or "")
+          and "&amp;" not in (n["title"] or "") and "&amp;" not in (n["publisher"] or ""),
+          f"container={n['container']!r} title={n['title']!r}")
+
 def test_chinese_punctuation():
     """使用者可見的中文輸出必須用全形標點——半形混在中文裡是台灣學術寫作的格式錯誤，
     而使用者會把報告內容直接複製進論文。"""
@@ -387,7 +430,8 @@ def main():
 
     suites = [test_title_similarity, test_author_overlap, test_identity_gate,
               test_crash_paths, test_absence_semantics, test_integrity_parsing,
-              test_chinese_punctuation, test_fulltext_boundary, test_output_hardening]
+              test_entity_decoding, test_chinese_punctuation,
+              test_fulltext_boundary, test_output_hardening]
     for s in suites:
         if args.filter and args.filter.lower() not in s.__name__.lower():
             continue

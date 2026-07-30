@@ -17,6 +17,7 @@
 所有輸出皆為 UTF-8 JSON(export 除外，輸出純文字 RIS/BibTeX)。
 """
 import argparse
+import html
 import json
 import os
 import re
@@ -232,21 +233,27 @@ def crossref_headers():
     return {"User-Agent": ua}
 
 
+def _unesc(v):
+    """解 HTML entity：Crossref 的期刊名常帶 &amp;（如 Soldering &amp; Surface Mount
+    Technology），原樣傳遞會寫進 RIS，使用者匯入 EndNote 後期刊名字面帶 &amp;。"""
+    return html.unescape(v) if isinstance(v, str) else v
+
+
 def norm_crossref(it):
     issued = (it.get("issued") or {}).get("date-parts") or [[None]]
     return {
         "source": "crossref",
-        "title": (it.get("title") or [None])[0],
+        "title": _unesc((it.get("title") or [None])[0]),
         "year": issued[0][0] if issued and issued[0] else None,
         "authors": [", ".join(filter(None, [a.get("family"), a.get("given")]))
                     for a in it.get("author") or []],
-        "container": (it.get("container-title") or [None])[0],
+        "container": _unesc((it.get("container-title") or [None])[0]),
         "doi": it.get("DOI"),
         "type": it.get("type"),
         "volume": it.get("volume"),
         "issue": it.get("issue"),
         "page": it.get("page"),
-        "publisher": it.get("publisher"),
+        "publisher": _unesc(it.get("publisher")),
     }
 
 
@@ -802,6 +809,20 @@ def rank_candidates(candidates):
                   reverse=True)
 
 
+def same_work(a, b):
+    """兩筆候選是否為同一篇論文(只是來自不同資料庫)。
+
+    verify 會同時收 Crossref 與 S2 的結果,同一篇常各出現一次。若不先辨識,
+    歧義檢查會把「兩個來源互相印證」(最強的證據)誤判成「配對有歧義」(疑點)——
+    一筆完全正確的引用因此被降級,而且降級理由是錯的。
+    """
+    da, db = (a.get("doi") or "").lower(), (b.get("doi") or "").lower()
+    if da and db:
+        return da == db
+    # 無 DOI 時退而求其次:標題幾乎相同且年份相符
+    return title_sim(a.get("title"), b.get("title")) >= 0.95 and a.get("year") == b.get("year")
+
+
 def decide_verdict(candidates, *, year_supplied=False):
     """雙路徑 identity gate：回 (verdict, identity_basis)。純函式，無 I/O。
 
@@ -828,11 +849,16 @@ def decide_verdict(candidates, *, year_supplied=False):
         reasons.append("使用者提供的作者無一出現在候選作者中")
     if year_supplied and yd is None:
         reasons.append("候選無年份資料，無法用年份佐證")
-    if len(candidates) > 1:
-        gap = ts - candidates[1]["match"]["title_sim"]
+    # 歧義只在「第二名是另一篇論文」時成立；同一篇的不同來源要略過
+    rival = next((c for c in candidates[1:] if not same_work(candidates[0], c)), None)
+    if rival is not None:
+        gap = ts - rival["match"]["title_sim"]
         if gap < 0.03:
-            reasons.append(f"前兩名候選標題相似度僅差 {round(gap, 3)}，配對有歧義")
+            reasons.append(f"另有相似度僅差 {round(gap, 3)} 的不同文獻，配對有歧義")
             basis["ambiguous"] = True
+    corroborating = sum(1 for c in candidates[1:] if same_work(candidates[0], c))
+    if corroborating:
+        basis["cross_source_corroboration"] = corroborating   # 同一篇被幾個來源印證
 
     if (title_path or author_path) and not reasons:
         basis["identity_confidence"] = "high" if title_path and ov else "medium"
@@ -919,7 +945,7 @@ def cmd_export(args):
         url = "https://doi.org/" + urllib.parse.quote(args.doi, safe="/")
         headers = {"Accept": accept, "User-Agent": "lit-review-skill/1.0"}
         try:
-            print(http_get(url, headers, 1.0, "doi").strip())
+            print(html.unescape(http_get(url, headers, 1.0, "doi").strip()))
         except urllib.error.HTTPError as e:
             print(json.dumps({"error": f"HTTP {e.code}", "doi": args.doi}, ensure_ascii=False))
             sys.exit(1)
