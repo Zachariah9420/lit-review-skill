@@ -173,12 +173,26 @@ What has **not** been exercised: other people's fields (medicine, social science
 - **Cost tiers.** `quick` (single agent, labeled "no independent audit") / default (one fresh-context skeptic, ~1.5–2×) / `thorough` (per-claim adversarial verification, 5–10×) — verification intensity follows the cost of being wrong.
 - **Resilient.** Automatic fallbacks: Semantic Scholar → OpenAlex, arXiv → Semantic Scholar. Rate limiting and 429 backoff built in.
 
+## Field applicability (measured, not assumed)
+
+Four fresh sessions ran this tool over medicine, pharmacy, social science and humanities literature with no prior knowledge of the project. The pattern they found is structural: **reliability falls off with distance from CS/AI**, because the tool's assumptions are CS/AI assumptions — that a work has a DOI, that its title is a unique key, that the author field is populated, that an abstract exists, and that venue-quality data comes back with the search.
+
+| Field | Reliable | Needs your eyes |
+|---|---|---|
+| **CS / AI** | All five assumptions hold; this is the home field | — |
+| **Medicine / pharmacy** | Retraction checks (the strongest feature here), paywall honesty, RIS export | `verify` results: correspondence and editorials reproduce the parent title verbatim, so check `type` and `container` before accepting a match. No PubMed/MEDLINE coverage, no NLM journal-abbreviation support |
+| **Social science** | `integrity` refusing to judge APA documents, retraction, full-text location | `similar_found` is often the tool's problem, not your citation's — reprints in edited collections carry new DOIs, APA-era DOIs use double slashes, and consortium authors (Open Science Collaboration, Many Labs) score zero author overlap by construction |
+| **Humanities** | Journal articles verify correctly | Books are the weak spot: no ISBN lookup exists, and a review of a book can outrank the book. Chicago-style fields (place, edition, translator, volume) are simply not in Crossref. Chinese-language work is refused up front by design — treat the tool as a signpost to a Chinese index, not a checker |
+
+Three things are trustworthy in every field tested: a **positive** retraction result, the paywall verdict from `fulltext`, and `integrity` refusing to judge a citation style it does not support. Outside CS/AI, a `found` verdict deserves one look at the candidate's type and container before you act on it.
+
 ## Honest limitations
 
 - Default judgments are abstract-based; "gap" findings mean *the abstract doesn't show it*, not *the paper doesn't contain it*. For verdicts the abstract can't settle, the skill escalates to open-access full text when available (and labels the evidence level) — but paywalled papers stay honestly marked "cannot judge"
 - Chinese-language literature: best-effort via Google Scholar when available, otherwise flagged for manual check (the structured APIs barely cover it)
 - Books (especially pre-2010): APIs often only index their *reviews* — the skill uses reviews as indirect existence evidence and tells you to check the ISBN
 - Industry proceedings (IPC/SMTA-style) are a blind spot for *every* database, including commercial ones — the skill says "not found in any index, verify with the publisher", never "fabricated"
+- **PubMed/MEDLINE is not searched.** Drug package inserts, FDA/EMA approval documents, clinical databases (UpToDate, Micromedex, Lexicomp), pharmacopoeias and ClinicalTrials.gov are all out of range — a not-found there is expected, not a finding
 - The tool makes bad citations harder to produce, but **the selection and interpretation of literature remains the author's responsibility** — it's a guardrail, not a chauffeur
 
 ## Example
