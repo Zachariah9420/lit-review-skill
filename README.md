@@ -70,6 +70,8 @@ Measured, not asserted: Scholar Button results carry no DOI and collapse volume/
 
 **Finding you a topic is also out of scope.** `gap <X and Y>` verifies an intersection **you have already named**: two or three re-worded queries, the nearest neighbours, and an honest "not found ≠ nobody did it". It does not generate candidate directions and will not tell you what to research. If you have no X and Y yet, that is a different job — a separate skill, `research-gap-hunter`, does it, and lit-review works exactly the same whether or not that skill is installed.
 
+**Nor is surveying the techniques.** `map <topic>` charts the *literature*: which papers are seminal, who the key authors are, where the last three years went. It does not chart the *approaches* — what methods are in play, what each one buys and costs, which are saturated. That is a technique survey, and `research-gap-hunter`'s `landscape` does it. Wanting both for the same field is reasonable; they are not substitutes for each other.
+
 ## What it does
 
 **Mode A — Find literature.** Extracts claims from your draft, searches Semantic Scholar / OpenAlex / arXiv, snowballs through citation networks to find classics keyword search misses, judges candidates by their abstracts (not titles), and exports an EndNote/Zotero-ready `.ris` file.
