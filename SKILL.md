@@ -1,6 +1,6 @@
 ---
 name: lit-review
-description: 根據使用者的文章或論文草稿，自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻，並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點)，也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章；另含研究生工具組：文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤、引用需求標記(annotate)、反面證據搜尋(counter)、證據強度評級(strength)、claim-evidence 總表(claims)、撤稿查詢(retract)。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review，貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時，都要使用本 skill。本 skill 的 gap 指令只查證使用者已指名的 X 與 Y 交集；若使用者連題目都還沒有、需要生成並逐一淘汰候選方向，那是題目生成，不在本 skill 範圍(環境裝有 research-gap-hunter 時交給它，沒有就如實說明本 skill 只能查證已指名的交集)。
+description: 根據使用者的文章或論文草稿，自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻，並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點)，也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章；另含研究生工具組：文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤、引用需求標記(annotate)、反面證據搜尋(counter)、證據強度評級(strength)、claim-evidence 總表(claims)、撤稿查詢(retract)。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review，貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問已指名兩概念的交集有沒有人做過、要準備口試文獻答辯時，都要使用本 skill。本 skill 的 gap 指令只查證使用者已指名的 X 與 Y 交集；若使用者連題目都還沒有、需要生成並逐一淘汰候選方向，那是題目生成，不在本 skill 範圍(環境裝有 research-gap-hunter 時交給它，沒有就如實說明本 skill 只能查證已指名的交集)。
 ---
 
 # lit-review：文獻抓取與引用查核
