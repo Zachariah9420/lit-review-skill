@@ -1,6 +1,6 @@
 ---
 name: lit-review
-description: 根據使用者的文章或論文草稿，自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻，並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點)，也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章；另含研究生工具組：文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤、引用需求標記(annotate)、反面證據搜尋(counter)、證據強度評級(strength)、claim-evidence 總表(claims)、撤稿查詢(retract)。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review，貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時，都要使用本 skill。
+description: 根據使用者的文章或論文草稿，自動用 Semantic Scholar、Crossref、arXiv API 搜尋相關文獻，並查核既有引用(文獻是否真實存在、書目欄位是否正確、內容是否支持文中論點)，也能從主題出發寫出「每個宣稱都有真實文獻支撐」的帶引用文章；另含研究生工具組：文獻矩陣、領域地圖、research gap 偵測、閱讀筆記卡、引用完整性檢查、中英術語一致性、口試/審稿預演、新文獻追蹤、引用需求標記(annotate)、反面證據搜尋(counter)、證據強度評級(strength)、claim-evidence 總表(claims)、撤稿查詢(retract)。凡是使用者提到找文獻、找 paper、補參考文獻、查核引用、檢查 citation、驗證參考文獻、related work、literature review，貼文章要求配文獻、問「這段話有沒有文獻支持」、要求「寫一篇帶參考文獻的文章」、要整理文獻比較表、問研究缺口、要準備口試文獻答辯時，都要使用本 skill。本 skill 的 gap 指令只查證使用者已指名的 X 與 Y 交集；若使用者連題目都還沒有、需要生成並逐一淘汰候選方向，那是題目生成，不在本 skill 範圍(環境裝有 research-gap-hunter 時交給它，沒有就如實說明本 skill 只能查證已指名的交集)。
 ---
 
 # lit-review：文獻抓取與引用查核
@@ -26,7 +26,7 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 | 修飾詞 `deep` / `quick` | 查核深度：含 OA 全文 / 僅摘要層 | `check deep 第二章.docx` |
 | 修飾詞 `bibtex` / `no-ris` | 引用檔格式偏好 | `find bibtex <段落>` |
 | `map <主題>` | 領域地圖：奠基文獻/關鍵作者/近年走向 | `map LLM 幻覺偵測` |
-| `gap <X 與 Y>` | Research gap 偵測(附誠實聲明) | `gap 知識圖譜 與 維修SOP生成` |
+| `gap <X 與 Y>` | Research gap 偵測：查證**使用者已指名**的單一交集(附誠實聲明);要生成題目候選是 research-gap-hunter 的事 | `gap 知識圖譜 與 維修SOP生成` |
 | `matrix <清單或主題>` | 文獻矩陣(方法/樣本/發現/限制對照表) | `matrix 這 12 篇：…` |
 | `notes <DOI或標題>` | 單篇閱讀筆記卡 | `notes DOI:10.1038/s41586-024-07500-2` |
 | `integrity <檔案>` | 文內引用 vs 列表三向核對(零 API) | `integrity 第二章.docx` |

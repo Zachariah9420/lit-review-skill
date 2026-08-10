@@ -59,7 +59,7 @@ git clone https://github.com/<repo>/lit-review-skill ~/.claude/skills/lit-review
 | `write <主題>` | 文獻支撐寫作 |
 | `verify <單筆引用>` | 單筆快查存在性+書目 |
 | `map <主題>` | 領域地圖：奠基文獻/關鍵作者/近年走向 |
-| `gap <X 與 Y>` | 研究缺口偵測 |
+| `gap <X 與 Y>` | 研究缺口偵測：查證你**已指名**的交集(附誠實聲明);不生成題目候選 |
 | `matrix <清單或主題>` | 文獻矩陣(方法/樣本/發現/限制對照表) |
 | `notes <DOI>` | 單篇閱讀筆記卡 |
 | `integrity <檔案>` | 文內引用 vs 列表三向核對(秒出、零成本) |

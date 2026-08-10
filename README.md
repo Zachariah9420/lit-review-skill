@@ -68,6 +68,8 @@ This tool starts where that ends: with citations you **already have** — from a
 
 Measured, not asserted: Scholar Button results carry no DOI and collapse volume/issue/pages into a truncated string, so they cannot drive bibliographic verification. Conversely, it surfaced a free repository PDF for a paywalled review that Unpaywall reported as closed — `fulltext` recovers the same URL via a fallback source, but the lesson stands: for *getting the paper*, use Scholar Button and your library.
 
+**Finding you a topic is also out of scope.** `gap <X and Y>` verifies an intersection **you have already named**: two or three re-worded queries, the nearest neighbours, and an honest "not found ≠ nobody did it". It does not generate candidate directions and will not tell you what to research. If you have no X and Y yet, that is a different job — a separate skill, `research-gap-hunter`, does it, and lit-review works exactly the same whether or not that skill is installed.
+
 ## What it does
 
 **Mode A — Find literature.** Extracts claims from your draft, searches Semantic Scholar / OpenAlex / arXiv, snowballs through citation networks to find classics keyword search misses, judges candidates by their abstracts (not titles), and exports an EndNote/Zotero-ready `.ris` file.
@@ -82,7 +84,7 @@ Measured, not asserted: Scholar Button results carry no DOI and collapse volume/
 
 **Mode C — Grounded writing.** Give it a topic; it retrieves first, writes second, and self-audits last — every cited claim traceable to retrieved evidence, expository passages explicitly uncited.
 
-**Grad toolkit.** Thirteen thesis-lifecycle tools: literature matrix, field map, research-gap detection, note cards, citation-integrity check, terminology consistency, committee-question rehearsal, new-literature watch, citation-needed annotation, counter-evidence search, evidence-strength grading, claim–evidence ledger, retraction lookup.
+**Grad toolkit.** Thirteen thesis-lifecycle tools: literature matrix, field map, research-gap detection (for an intersection you name), note cards, citation-integrity check, terminology consistency, committee-question rehearsal, new-literature watch, citation-needed annotation, counter-evidence search, evidence-strength grading, claim–evidence ledger, retraction lookup.
 
 ## Quick start
 

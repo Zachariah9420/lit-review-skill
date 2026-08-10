@@ -59,7 +59,7 @@ Commands are optional — the agent infers the mode from your input. For precise
 | `write <topic>` | Literature-grounded writing |
 | `verify <one citation>` | Quick single-citation existence + bibliography check |
 | `map <topic>` | Field map: seminal papers / key authors / recent directions |
-| `gap <X and Y>` | Research-gap detection (with honesty disclaimers) |
+| `gap <X and Y>` | Research-gap detection for an intersection **you name** (with honesty disclaimers); does not generate topic candidates |
 | `matrix <list or topic>` | Literature matrix (method/sample/findings/limitations table) |
 | `notes <DOI>` | Single-paper reading note card |
 | `integrity <file>` | In-text vs. reference-list three-way check (instant, zero cost) |
