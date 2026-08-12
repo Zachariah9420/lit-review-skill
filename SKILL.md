@@ -5,6 +5,20 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 
 # lit-review：文獻抓取與引用查核
 
+## 開跑前先確認自己是不是完整的
+
+這支 skill 的核心是一支腳本：`scripts/lit_api.py`。**沒有它，這裡的每一個查核都做不到**——存在性、書目比對、撤稿、滾雪球、全文定位全部靠它。另外 `references/grad-toolkit.md`(研究生工具組各指令的工序)與 `references/api-notes.md`(各 API 的坑)也是執行時要讀的。
+
+**有些安裝管道只給 `SKILL.md` 一個檔案**(目錄站的單檔安裝、把這份貼進對話、只複製一個檔)。那種情況下腳本不存在,而你不會收到任何錯誤——你只會照著指示去呼叫一支不在的程式,然後很容易改成「憑記憶回答」,那正是這支 skill 存在要防的事。
+
+所以第一件事:**確認 `scripts/lit_api.py` 讀得到**。讀不到就**在開始之前告訴使用者**,逐字說這一句:
+
+> 我拿到的是單檔版的 lit-review,`scripts/lit_api.py` 不在,所以我沒辦法做任何存在性查核、書目比對或撤稿查詢。要完整版請跑
+> `git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit-review`,
+> 或 `claude plugin marketplace add Zachariah9420/claude-research-skills` 再 `claude plugin install lit-review@zachariah-research-skills`。
+
+**這一條沒有降級模式。** 其他缺項可以標記後繼續,這一項不行:一份沒有經過 API 查核的「查核報告」,比沒有報告危險——它會讓使用者以為引用被驗過了。腳本不在就只能做兩件事:替使用者找出**該查哪幾筆**,並明講每一筆都還沒查。
+
 兩件事，可單獨或一起做：
 
 - **模式 A(找文獻)**：從文章中萃取需要文獻支持的論點，搜尋學術資料庫，推薦文獻並產出 RIS/BibTeX。
