@@ -16,10 +16,20 @@ The core selling point is **honesty**: not-found is reported as not-found, unjud
 
 ## Installation
 
-**Claude Code** (desktop or CLI):
+**Claude Code** (desktop or CLI) — as a plugin. The first command registers the marketplace, the second installs from it; running the second alone fails:
 
 ```bash
-git clone https://github.com/<repo>/lit-review-skill ~/.claude/skills/lit-review
+claude plugin marketplace add Zachariah9420/claude-research-skills
+```
+
+```bash
+claude plugin install lit-review@zachariah-research-skills
+```
+
+Or clone it as a skill instead:
+
+```bash
+git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit-review
 ```
 
 Works immediately, no restart. The helper script is pure Python 3.8+ standard library — nothing to pip-install.

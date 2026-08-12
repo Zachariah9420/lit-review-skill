@@ -16,10 +16,20 @@
 
 ## 安裝
 
-**Claude Code**(桌面版或 CLI):
+**Claude Code**(桌面版或 CLI)—— 裝成 plugin。第一行註冊 marketplace、第二行才安裝,只跑第二行會失敗:
 
 ```bash
-git clone https://github.com/<repo>/lit-review-skill ~/.claude/skills/lit-review
+claude plugin marketplace add Zachariah9420/claude-research-skills
+```
+
+```bash
+claude plugin install lit-review@zachariah-research-skills
+```
+
+或者直接 clone 成 skill:
+
+```bash
+git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit-review
 ```
 
 裝完即用，不需重啟。腳本是純 Python 標準函式庫(3.8+)，不用 pip 裝任何東西。

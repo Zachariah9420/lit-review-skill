@@ -90,10 +90,20 @@ Measured, not asserted: Scholar Button results carry no DOI and collapse volume/
 
 ## Quick start
 
-**Claude Code:**
+**Claude Code — as a plugin.** The first line registers the marketplace; the second installs from it, so run both, in order:
 
 ```bash
-git clone https://github.com/<you>/lit-review-skill ~/.claude/skills/lit-review
+claude plugin marketplace add Zachariah9420/claude-research-skills
+```
+
+```bash
+claude plugin install lit-review@zachariah-research-skills
+```
+
+**Or clone it as a skill,** if you would rather not add a marketplace:
+
+```bash
+git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit-review
 ```
 
 Then just ask: *"check the citations in my chapter2.docx"* or *"find literature for this paragraph: …"* — the skill infers the mode from your input.

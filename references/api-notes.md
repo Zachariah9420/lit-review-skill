@@ -64,9 +64,12 @@
 | `found` | title_sim ≥ 0.93 且年差 ≤ 1 | 直接進書目比對 |
 | `similar_found` | title_sim ≥ 0.8 | 人工比對：副標題省略？preprint/正式版？還是真的寫錯？ |
 | `not_found` | 其他 | 換詞重查一次；仍無 → 照輸出的 `absence_note` 寫(列名實際查過的來源) |
-| 降級檢查 | 即使 title/author 路徑通過，以下任一成立即降為 `similar_found`：年份差 >1、使用者給的作者無一重疊、使用者給了年份但候選無年份、**另有相似度僅差 <0.03 的「不同」文獻** |
-| 跨來源印證 | 同一篇論文的 Crossref/S2 兩筆候選**不算歧義**（`same_work()` 依 DOI 去重），會記在 `identity_basis.cross_source_corroboration` |
 | `partial_failure` | 候選為空且有來源錯誤 | **查詢未完成 ≠ 查無**——重試，或報告如實寫「來源暫時查詢失敗」 |
+
+上表之外還有兩條規則,它們不是 `verdict_hint` 的值,所以不列在表裡：
+
+- **降級檢查**：即使 title/author 路徑通過，以下任一成立即降為 `similar_found`——年份差 >1、使用者給的作者無一重疊、使用者給了年份但候選無年份、**另有相似度僅差 <0.03 的「不同」文獻**。
+- **跨來源印證**：同一篇論文的 Crossref/S2 兩筆候選**不算歧義**（`same_work()` 依 DOI 去重），會記在 `identity_basis.cross_source_corroboration`。
 
 - `match.author_overlap`：查詢作者姓氏出現在候選作者中的比例；低於 0.5 且 title_sim 又不高時，幾乎可斷定不是同一篇。
 - `match.year_diff`:1 年差常見(online-first vs 紙本),≥2 年才視為書目錯誤。

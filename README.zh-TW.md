@@ -57,10 +57,20 @@
 
 ## 快速上手
 
-**Claude Code**:
+**Claude Code —— 裝成 plugin**。第一行是註冊 marketplace、第二行才是安裝,兩行都要跑,順序不能反:
 
 ```bash
-git clone https://github.com/<you>/lit-review-skill ~/.claude/skills/lit-review
+claude plugin marketplace add Zachariah9420/claude-research-skills
+```
+
+```bash
+claude plugin install lit-review@zachariah-research-skills
+```
+
+**或者直接 clone 成 skill**,不想多加一個 marketplace 的話:
+
+```bash
+git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit-review
 ```
 
 然後直接說：「幫我查這章的引用」或「幫這段找文獻：…」——skill 會從輸入推斷模式。
