@@ -20,9 +20,13 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # (描述， 目標檔， 原始片段， 突變片段， 必須因此失敗的案例)
 MUTATIONS = [
-    ("刪除 CJK 字元 → 混語標題塌縮", "lit_api.py",
-     'return re.sub(r"\\s+", " ", re.sub(rf"[^a-z0-9{CJK}]+", " ", (t or "").lower())).strip()',
-     'return re.sub(r"[^a-z0-9 ]", "", (t or "").lower()).strip()',
+    # 這條原本突變的是 norm_title 裡那個 [^a-z0-9{CJK}]+ 的字元類。那個字元類本身
+    # 就是一個 bug(它只保了 CJK,把希臘、西里爾、韓文、阿拉伯文的字母全刪掉,於是
+    # TNF-α 與 TNF-β 塌縮成同一個字串),已改成 isalnum()。突變因此要跟著改指向新
+    # 的實作——否則「目標片段不存在」會讓這條防護變成沒有人證明過的防護。
+    ("只保留 ASCII 字母 → 非拉丁標題塌縮", "lit_api.py",
+     'kept = [ch if ch.isalnum() else " " for ch in (t or "").lower()]',
+     'kept = [ch if (ch.isascii() and ch.isalnum()) else " " for ch in (t or "").lower()]',
      ["CX-01"]),
     ("移除空字串防護 → 空對空 = 1.0", "lit_api.py",
      "    if not na or not nb:\n        return 0.0\n", "",

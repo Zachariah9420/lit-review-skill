@@ -6,7 +6,10 @@ import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
-R = os.path.expanduser("~/Documents/lit-review-skill")
+
+# repo 根目錄從本檔位置推出來，不要寫死在某個人的家目錄：clone 到別的地方
+# (或裝成 plugin)時，寫死的路徑會讓這支掃描器安靜地去掃另一棵樹，或掃不到而爆掉。
+R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def read(p):
@@ -50,7 +53,7 @@ n_mut = mut.count('", "lit_api.py"') + mut.count('", "cite_integrity.py"')
 print(f"■ 突變數實際：{n_mut}")
 for f in ("README.md", "README.zh-TW.md", "SKILL.md", "evals/README.md"):
     txt = read(f)
-    for claim in re.findall(r"(\d+)\s*(?:fixed bugs|個已修的 bug|mutations)", txt):
+    for claim in re.findall(r"(\d+)\s*(?:fixed bugs|個已修的 bug|mutations|個突變(?:體)?)", txt):
         if int(claim) != n_mut:
             issues.append(f"{f} 宣稱 {claim} 個突變，實際 {n_mut}")
 
@@ -84,5 +87,11 @@ if issues:
     print(f"發現 {len(issues)} 項不同步：")
     for i in issues:
         print("  -", i)
+    # 這一行以前不存在。整支掃描器把問題收好、印出來，然後就結束了——Python
+    # 回 0。於是它的每一項檢查都只是印給人看的建議，任何 CI、任何 `&&`、任何
+    # 「跑過了、綠的」都讀到一個不可能變紅的離開碼。查了東西卻不會失敗的閘門，
+    # 比沒有閘門更危險：它會被當成證據。
+    sys.exit(1)
 else:
     print("文件與程式碼一致")
+    sys.exit(0)

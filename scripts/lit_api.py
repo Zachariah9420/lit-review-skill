@@ -77,7 +77,25 @@ def _reserve_slot(bucket, min_interval):
         return earliest - now
 
 
-def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, data=None):
+# 單次連線的 socket 逾時、重試次數,以及「一次 http_get 最久會花多久」。
+# 最後那個數字必須是**推導**出來的:呼叫端(verify_one)要等這些執行緒,而它等的
+# 時間如果比這裡短,執行緒會在還沒回報成功或失敗之前就被丟掉——那正是本檔曾經
+# 發生的事(join 等 90 秒,而這裡最壞要 162 秒),結果是「來源沒回答」被讀成
+# 「來源說沒有」。兩個數字之間沒有任何東西綁著,所以它們各自漂走了。
+SOCKET_TIMEOUT = 30
+HTTP_RETRIES = 3
+# 4 次嘗試各自可能耗掉整個 socket 逾時,加上 429 路徑的退避 6+12+24。
+HTTP_WORST_CASE = ((HTTP_RETRIES + 1) * SOCKET_TIMEOUT
+                   + sum((2 ** i) * 6 for i in range(HTTP_RETRIES)))
+
+# 可重試的 5xx／暫時性狀態碼。504(gateway timeout)、408(request timeout)與
+# Cloudflare 的 522／524 都是「再試一次很可能就好」,漏掉它們等於把一次暫時性
+# 失敗變成一次永久性的「查無」。
+RETRYABLE_STATUS = (500, 502, 503, 504, 408, 522, 524)
+
+
+def http_get(url, headers=None, min_interval=0.0, bucket="default",
+             retries=HTTP_RETRIES, data=None):
     """帶速率限制與 429/5xx 退避重試的 GET(data 給值時為 POST)。執行緒安全。"""
     wait = _reserve_slot(bucket, min_interval)
     if wait > 0:
@@ -91,7 +109,7 @@ def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, d
                 w = _reserve_slot(bucket, min_interval)
                 if w > 0:
                     time.sleep(w)
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=SOCKET_TIMEOUT) as r:
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             last_err = e
@@ -100,7 +118,7 @@ def http_get(url, headers=None, min_interval=0.0, bucket="default", retries=3, d
             if e.code == 429 and attempt < retries:
                 time.sleep((2 ** attempt) * 6)  # S2 無 key 時共享池很擠，退避要夠長
                 continue
-            if e.code in (500, 502, 503) and attempt < retries:
+            if e.code in RETRYABLE_STATUS and attempt < retries:
                 time.sleep((2 ** attempt) * 2)
                 continue
             raise
@@ -317,7 +335,14 @@ def arxiv_query(query, limit=10, id_list=None):
     root = ET.fromstring(xml_text)
     out = []
     for e in root.findall(ATOM + "entry"):
-        arxiv_id = (e.findtext(ATOM + "id") or "").rsplit("/abs/", 1)[-1]
+        raw_id = e.findtext(ATOM + "id") or ""
+        # arXiv 查詢有問題時,API 不回 HTTP 錯誤碼,而是回一個「長得像論文」的
+        # entry:id 指向 arxiv.org/api/errors、標題就叫 Error、作者 arXiv api core。
+        # 照單全收的話,它會一路變成一筆格式完整、可以匯進 EndNote 的引用。
+        # 真論文的 id 一定含 /abs/,錯誤 entry 沒有——用這個把它擋掉。
+        if "/abs/" not in raw_id:
+            continue
+        arxiv_id = raw_id.rsplit("/abs/", 1)[-1]
         out.append({
             "source": "arxiv",
             "arxiv": re.sub(r"v\d+$", "", arxiv_id),
@@ -478,14 +503,20 @@ def cmd_versions(args):
             n = norm_crossref(cr.get("message", {}))
             title = n.get("title")
             out["s2_record"] = n
-        except urllib.error.HTTPError:
-            pass
+        except urllib.error.HTTPError as e:
+            # 這兩個 except 以前都是 pass。兩邊都失敗時 title 仍是 None,流程會走到
+            # 最後印出「無法解析版本鏈，請確認輸入為 DOI:x / ARXIV:x / 完整標題」
+            # ——對一個格式完全正確的 DOI,把伺服器的 429/500 說成使用者打錯字。
+            # 錯誤歸錯誤:記下來,下游才有機會回非零並說出真正的原因。
+            if e.code != 404:
+                out["crossref_error"] = str(e)
         try:
             sp = s2_get_paper("DOI:" + doi)
             out["arxiv"] = sp.get("arxiv")
             title = title or sp.get("title")
-        except urllib.error.HTTPError:
-            pass
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                out["s2_error"] = str(e)
     else:
         title = ident
         if not has_latin(ident):
@@ -572,8 +603,11 @@ def cmd_fulltext(args):
                     rec["oa_locations"].append({"url": sp["openAccessPdf"],
                                                 "host_type": "semanticscholar_oa_field",
                                                 "version": None, "license": None})
-            except (urllib.error.HTTPError, OSError):
-                pass
+            except (urllib.error.HTTPError, OSError) as e:
+                # 這裡以前是 pass。備援查詢失敗被吞掉之後,下面的 else 會印出
+                # 「🔒 未找到合法免費版」並教使用者去跑機構圖書館——一個根據從未
+                # 完成的查詢做出的結論。查不到和沒查到,不是同一件事。
+                rec.setdefault("error", "S2 OA 欄位備援查詢失敗：%s" % e)
         if rec["oa_locations"]:
             rec["status"] = "✅ 有合法免費全文"
             # Unpaywall 判 closed 但備援找到 OA 版：兩者並列會看起來矛盾，明說來源差異
@@ -629,6 +663,7 @@ def cmd_retract(args):
             # 出版社的習慣）常把撤稿/關切聲明當成獨立文章發表而不設 updates 關聯。
             # VIGOR/rofecoxib（NEJM 2000）就是這樣：兩份 Expression of Concern
             # 明明在 Crossref，updates 查詢卻一無所獲，回傳誤導性的「乾淨」。
+            fallback_err = None
             if not notices:
                 try:
                     meta = json.loads(http_get(
@@ -662,8 +697,12 @@ def cmd_retract(args):
                                          or [[None]])[0],
                                 "detection": "title_search_fallback",
                             })
-                except OSError:
-                    pass
+                except OSError as e:
+                    # 這裡以前是 pass。這段標題搜尋是備援,存在的理由正是 Crossref
+                    # 的 updates 關聯對 2010 年前的文獻覆蓋不佳;它失敗而被吞掉之後,
+                    # notices 是空的,於是下面印出「✅ 無已知撤稿記錄」——對一篇可能
+                    # 已被撤稿的文獻開綠燈。撤稿查詢開錯綠燈的代價特別高。
+                    fallback_err = str(e)
             severe = any((n.get("type") or "").lower() in
                          ("retraction", "retraction_notice", "removal", "withdrawal",
                           "partial_retraction", "expression_of_concern") for n in notices)
@@ -675,12 +714,18 @@ def cmd_retract(args):
                           if fallback_only else "🚨 有撤稿/疑慮記錄，不可引用，詳見 notices")
             elif notices:
                 status = "⚠️ 有更正記錄(correction/erratum)，引用前確認更正內容"
+            elif fallback_err:
+                # 備援查詢沒跑完就不能發綠勾:notices 是空的,但那是「沒查到」
+                # 還是「沒查完」,這裡分得出來,就必須說出來。
+                status = "❓ 撤稿查詢不完整（updates 無記錄，標題搜尋備援失敗）"
             else:
                 # 2010 年前的通知關聯覆蓋不佳，綠勾在此年代沒有證據力
                 yr = None
                 m = re.search(r"\b(19|20)\d{2}\b", doi)
                 status = "✅ Crossref 無已知撤稿/更正記錄"
             rec = {"doi": doi, "status": status, "notices": notices}
+            if fallback_err:
+                rec["error"] = fallback_err
             if not notices:
                 rec["coverage_caveat"] = (
                     "Crossref 的撤稿關聯對 2010 年前的文獻覆蓋不佳（部分出版社把撤稿/"
@@ -821,15 +866,25 @@ CJK = r"぀-ヿ㐀-䶿一-鿿豈-﫿"
 
 
 def norm_title(t):
-    # 1) 保留 CJK 字元：刪掉它們會讓「深度學習：A Study」與「量子物理：A Study」
-    #    都塌縮成「a study」而 title_sim=1.0(完全不同的論文被判為同一篇)。
+    # 1) 保留**所有語系**的字母與數字,不只拉丁與 CJK。理由與當初保留 CJK 的理由
+    #    完全相同,只是當初只想到中文:刪掉某個語系的字母,會讓兩篇不同的論文塌縮
+    #    成同一個字串。實際踩到的是希臘字母——「Role of TNF-α in sepsis」與
+    #    「Role of TNF-β in sepsis」都會變成「role of tnf in sepsis」,title_sim
+    #    回 1.0,判定 found:一篇不存在的論文被認證為存在。西里爾、韓文、阿拉伯文
+    #    同理。用 isalnum() 而不是列舉區間,因為列舉區間就是這個 bug 的成因。
     # 2) 以空格取代其餘符號(不是刪除)：刪除會讓「Need:A」黏成「needa」扭曲相似度。
-    return re.sub(r"\s+", " ", re.sub(rf"[^a-z0-9{CJK}]+", " ", (t or "").lower())).strip()
+    kept = [ch if ch.isalnum() else " " for ch in (t or "").lower()]
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
 
 
 def has_latin(t):
-    """標題是否含可供英文索引比對的拉丁字母數字。"""
-    return bool(re.search(r"[a-z0-9]", (t or "").lower()))
+    """標題是否含可供英文索引比對的拉丁**字母**。
+
+    以前這裡是 [a-z0-9]:一個純希臘文或純韓文的標題只要帶個年份數字就會被判定
+    「可以用英文索引查」,然後拿一串查不到東西的關鍵字去查,回來的空結果被讀成
+    查無。數字不是可索引的內容。
+    """
+    return bool(re.search(r"[a-z]", (t or "").lower()))
 
 
 def title_sim(a, b):
@@ -838,7 +893,15 @@ def title_sim(a, b):
     # 任意其他標題。查不到不得偽裝成查到 → 回 0.0。
     if not na or not nb:
         return 0.0
-    return round(SequenceMatcher(None, na, nb).ratio(), 3)
+    char_ratio = SequenceMatcher(None, na, nb).ratio()
+    # 字元層的比對會把「一整個詞不一樣」稀釋成「一個字元不一樣」:
+    # 「role of tnf α in sepsis」對「role of tnf β in sepsis」只差 1/24 個字元,
+    # char_ratio = 0.957,越過 0.93 的 found 門檻——兩篇不同的論文互相認證。
+    # 詞層的比對看得見那是一整個詞:6 個詞差 1 個 → 0.833,落回 similar_found,
+    # 使用者會被要求人工比對,而不是拿到一個綠燈。取兩者較小值:標題是由詞組成的,
+    # 任一層看出差異就是差異。
+    token_ratio = SequenceMatcher(None, na.split(), nb.split()).ratio()
+    return round(min(char_ratio, token_ratio), 3)
 
 
 def author_overlap(query_authors, cand_authors):
@@ -863,7 +926,15 @@ def author_overlap(query_authors, cand_authors):
 def score_candidate(cand, title, authors, year):
     s = {"title_sim": title_sim(title, cand.get("title"))}
     if year and cand.get("year"):
-        s["year_diff"] = abs(int(year) - int(cand["year"]))
+        # 年份可能是「2020a」(APA 同年多篇的字母後綴)、「2020-05」或一段文字。
+        # 讓 int() 直接爆掉的後果不是報錯,是更糟:這個函式跑在 fetch_crossref／
+        # fetch_s2 裡面,而那一層用 except Exception 把任何例外收成「這個來源查詢
+        # 失敗」——於是一個純粹的字串格式問題,會被回報成整個資料庫查不到。
+        try:
+            s["year_diff"] = abs(int(re.sub(r"\D.*$", "", str(year)) or 0)
+                                 - int(re.sub(r"\D.*$", "", str(cand["year"])) or 0))
+        except (TypeError, ValueError):
+            s["year_diff"] = None          # 比不出來就說比不出來,不要假裝相符
     ov = author_overlap(authors, cand.get("authors"))
     if ov is not None:
         s["author_overlap"] = ov
@@ -898,7 +969,19 @@ def derivative_signals(c, query_authors=None):
     out = []
     page = (c.get("page") or "").strip()
     m = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", page)
-    span = (int(m.group(2)) - int(m.group(1)) + 1) if m else (1 if page.isdigit() else None)
+    span = None
+    if m:
+        lo, hi = m.group(1), m.group(2)
+        # 期刊常把結束頁縮寫:「2224-30」意思是 2224–2230,不是 2224 到 30。
+        # 直接相減會得到 -2193,而下面的判斷是 span <= 3——負數一律成立,於是一篇
+        # 橫跨七頁的正常論文被標成「僅 -2193 頁,書評的典型長度」。
+        if len(hi) < len(lo):
+            hi = lo[:len(lo) - len(hi)] + hi
+        span = int(hi) - int(lo) + 1
+        if span <= 0:                      # 仍然算不出合理跨距就不猜
+            span = None
+    elif page.isdigit():
+        span = 1
     if span is not None and span <= 3:
         out.append(f"候選僅 {span} 頁（{page}）——書評、讀者投書、社論等衍生條目的典型長度")
     t = (c.get("type") or "").lower()
@@ -909,7 +992,12 @@ def derivative_signals(c, query_authors=None):
         first = (c["authors"][0] or "")
         qs = {a.split(",")[0].strip().lower() if "," in a else a.split()[-1].lower()
               for a in query_authors if a and a.strip()}
-        if qs and not any(q in first.lower() for q in qs) and                 author_overlap(list(query_authors), c["authors"]) == 1.0:
+        # 比對必須是「詞相等」而不是「子字串包含」。用 `q in first.lower()` 時,
+        # 使用者姓 Li 而第一作者叫 Elizabeth Wallis,'li' 出現在 'elizabeth' 裡面,
+        # 於是條件不成立、整條書評防護自己關掉——姓氏越短越容易關掉,而短姓氏
+        # (Li、Wu、Xu、Ng)正是最常見的一批。
+        first_tokens = {w for w in re.split(r"[^\w]+", first.lower()) if w}
+        if qs and not (qs & first_tokens) and author_overlap(list(query_authors), c["authors"]) == 1.0:
             out.append(f"使用者提供的作者出現在候選中，但第一作者是他人（{first}）"
                        "——書評／評論條目的典型樣態")
     return out
@@ -1039,12 +1127,29 @@ def verify_one(title, authors, year):
         except Exception as e:
             out[name + "_error"] = str(e)
 
-    threads = [threading.Thread(target=run, args=(n, f))
+    threads = [(n, threading.Thread(target=run, args=(n, f)))
                for n, f in (("crossref", fetch_crossref), ("s2", fetch_s2))]
-    for t in threads:
+    for _, t in threads:
         t.start()
-    for t in threads:
-        t.join(timeout=90)
+    # 等的時間必須大於 http_get 自己的最壞情況,否則健康但慢的來源會被無故丟掉。
+    # 用共用的截止時間而不是逐條各給一個預算:後者會讓總等待變成條數乘以預算
+    # (兩條就是 344 秒),而使用者等的是「全部查完」,不是「每一條各自的耐心」。
+    join_budget = HTTP_WORST_CASE + 10
+    deadline = time.monotonic() + join_budget
+    for _, t in threads:
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    # join(timeout=…) 回來**不代表**執行緒跑完了。逾時的那一條既沒寫入結果、也
+    # 沒寫入 *_error,out 裡什麼都沒有。而下面每一段都用「有沒有 *_error」判斷這
+    # 次查詢完不完整,所以一片沉默會被讀成「這個來源查過了,沒有東西」:
+    # single_source_degraded 不會標、identity_confidence 照樣 high、而 partial_failure
+    # ——那條專門為「查詢未完成 ≠ 查無」寫的路徑——永遠走不到。
+    # 沒回答和回答沒有,是這支工具最不能混淆的兩件事。
+    for name, t in threads:
+        if name not in out and (name + "_error") not in out:
+            out[name + "_error"] = (
+                "查詢逾時：%d 秒內未回應（執行緒可能仍在執行，本次不採計其結果）"
+                % join_budget)
 
     for name in ("crossref", "s2"):
         result["candidates"].extend(out.get(name) or [])
@@ -1110,7 +1215,17 @@ def cmd_verify_batch(args):
                     return
                 i = idx[0]
                 idx[0] += 1
-            it = items[i] or {}
+            # `items[i] or {}` 擋得住 None,擋不住字串——而使用者手寫的清單很容易
+            # 是 ["Some Title", {...}] 這種混形狀。字串沒有 .get,worker 執行緒會
+            # 當場死掉,results[i] 留在 None,最後那一筆從輸出裡整個消失:一份
+            # 「全部查完」的報告少了一列,而沒有任何地方說少了。
+            if not isinstance(items[i], dict):
+                results[i] = {"verdict_hint": "invalid_entry",
+                              "error": "清單第 %d 筆不是物件（而是 %s），未查詢"
+                                       % (i + 1, type(items[i]).__name__),
+                              "raw": items[i]}
+                continue
+            it = items[i]
             au = it.get("authors")
             if isinstance(au, str):
                 au = [a.strip() for a in au.split(";") if a.strip()]
