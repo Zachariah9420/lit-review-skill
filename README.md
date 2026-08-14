@@ -166,7 +166,7 @@ handed to you** — a package that leaks is worse than no package.
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 74 frozen cases, no network, seconds
+python evals/test_regression.py     # 75 frozen cases, no network, seconds
 python evals/mutation_check.py      # re-introduces 9 fixed bugs; each must be caught
 ```
 

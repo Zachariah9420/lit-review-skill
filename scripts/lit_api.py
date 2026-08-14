@@ -493,7 +493,7 @@ def cmd_versions(args):
                     out["arxiv_record"] = {"title": title, "year": entries[0]["year"]}
             except OSError as e:
                 out["arxiv_error"] = str(e)
-    elif ident.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", ident):
+    elif looks_like_doi(ident):
         # 只認 DOI: 前綴(不分大小寫)或真正的 10.xxxx/ 格式——先前「含斜線就當 DOI」
         # 會把「Risk/Benefit Analysis」這種正常標題誤送 DOI 端點
         doi = re.sub(r"^doi:", "", ident, flags=re.I)
@@ -863,6 +863,17 @@ def cmd_snowball(args):
 # ---------- verify ----------
 
 CJK = r"぀-ヿ㐀-䶿一-鿿豈-﫿"
+
+
+def looks_like_doi(ident):
+    """這串輸入是不是 DOI。
+
+    抽成模組層函式,是為了讓迴歸測試打得到**這一個**判定。以前測試在自己檔案裡
+    複製了一份等價的 lambda 然後測那份 lambda——那種測試對生產程式碼的任何改動
+    都不會變紅,它證明的只是它自己抄對了。
+    """
+    ident = (ident or "").strip()
+    return bool(ident.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", ident))
 
 
 def norm_title(t):

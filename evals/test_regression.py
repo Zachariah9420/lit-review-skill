@@ -299,12 +299,13 @@ def test_absence_semantics():
           f"exit={code} error={d.get('error')}")
 
     # CX-11:DOI 判定必須要求 10.x/ 形狀，含斜線的正常標題不得被誤送 DOI 端點
-    #（純字串檢查，不打 API：驗證 regex 本身)
-    import re
-    is_doi = lambda s: bool(s.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", s))
+    #（純字串檢查，不打 API）。**呼叫的是生產程式碼的 la.looks_like_doi**——
+    # 這一條以前在本檔就地定義一個等價的 lambda 然後測那個 lambda，
+    # 於是 lit_api.py 那邊怎麼改都不會讓它變紅：一條不可能失敗的測試。
     check("CX-11", "含斜線的標題不被誤判為 DOI",
-          not is_doi("Risk/Benefit Analysis in Medicine") and is_doi("10.1234/abc")
-          and is_doi("doi:10.1234/abc"))
+          not la.looks_like_doi("Risk/Benefit Analysis in Medicine")
+          and la.looks_like_doi("10.1234/abc")
+          and la.looks_like_doi("doi:10.1234/abc"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -456,12 +457,35 @@ def test_empty_author_candidate():
 def test_single_source_degradation():
     """MED-05：某個來源掛掉但另一來源仍有候選時，判定實際上退化成單源。
     使用者必須看得出證據強度的差別，不能只把錯誤埋在 *_error 欄位裡。"""
-    src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
-    fn = src[src.index("def verify_one"):src.index("def cmd_verify_batch")]
+    # 這兩條以前是在 lit_api.py 的**原始碼文字**裡 grep 幾個字串,一行程式都沒有
+    # 跑過:把整段邏輯換成 `pass` 而保留那幾個字在註解裡,測試照樣綠。
+    # 現在真的驅動失敗路徑——把 Crossref 換成會拋 OSError 的假物件、S2 回一筆
+    # 正常候選,然後看輸出。不連網。
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "la_med", os.path.join(SKILL, "scripts", "lit_api.py"))
+    la = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(la)
+
+    def boom(*a, **k):
+        raise OSError("模擬 Crossref 連線失敗")
+
+    la.crossref_search = boom
+    la.s2_match = lambda *a, **k: [{
+        "title": "Attention Is All You Need", "year": 2017,
+        "authors": ["Ashish Vaswani"], "doi": "10.5555/3295222",
+        "source": "s2", "venue": "NIPS"}]
+    la.s2_search = lambda *a, **k: []
+    r = la.verify_one("Attention Is All You Need",
+                      authors=["Vaswani, Ashish"], year=2017)
+    basis = r.get("identity_basis") or {}
     check("MED-05", "單源退化時輸出 single_source_degraded 說明",
-          "single_source_degraded" in fn and "證據強度低於雙源交叉" in fn)
-    check("MED-06", "單源退化時把 high 信心降為 medium",
-          'get("identity_confidence") == "high"' in fn and "sources_degraded" in fn)
+          "證據強度低於雙源交叉" in (r.get("single_source_degraded") or ""),
+          f"single_source_degraded={r.get('single_source_degraded')!r}")
+    check("MED-06", "單源退化時信心不得留在 high，且標出退化來源",
+          basis.get("identity_confidence") != "high" and basis.get("sources_degraded"),
+          f"confidence={basis.get('identity_confidence')!r} "
+          f"degraded={basis.get('sources_degraded')!r}")
 
 
 def test_vancouver_and_list_guard():
@@ -512,10 +536,19 @@ def test_rate_limiter_concurrency():
     import threading
     INTERVAL, N = 0.05, 12
 
+    # 比對的是 _last_call 裡**排定的絕對時刻**，不是 _reserve_slot 回傳的等待秒數。
+    # 回傳值是 earliest - now，而 now 每次呼叫都在前進，所以兩次回傳值的差 =
+    # INTERVAL 減去兩次呼叫之間的真實耗時——它本來就不會剛好等於 INTERVAL，
+    # 這條測試因此會偶發變紅（實測六次紅一次，0.049 對 0.05）。
+    # 排定時刻則是純算術：earliest = 前一個 earliest + INTERVAL，確定性的。
+    # 一條會偶發變紅的測試，訓練出來的反應是「再跑一次」，那等於把閘門關掉。
     la._last_call.clear()
-    seq = [la._reserve_slot("seq_bucket", INTERVAL) for _ in range(4)]
-    gaps = [round(b - a, 4) for a, b in zip(seq, seq[1:])]
-    check("PERF-01", "連續預約的時段間隔剛好是 min_interval（純算術，不受負載影響）",
+    slots = []
+    for _ in range(4):
+        la._reserve_slot("seq_bucket", INTERVAL)
+        slots.append(la._last_call["seq_bucket"])
+    gaps = [round(b - a, 6) for a, b in zip(slots, slots[1:])]
+    check("PERF-01", "連續預約的排定時刻間隔剛好是 min_interval（純算術，不受負載影響）",
           all(abs(g - INTERVAL) < 1e-6 for g in gaps), f"間隔={gaps} 期望每個={INTERVAL}")
 
     la._last_call.clear()
@@ -584,8 +617,11 @@ def test_fulltext_boundary():
 
 
 def test_output_hardening():
-    # CX-15:RIS 欄位值內的換行會截斷記錄 → 必須清理
-    poison = [{"title": "Legit Title\nER  - \nTY  - JOUR\nTI  - Injected",
+    # 酬載必須含**真正的控制字元**。以前只放 \n,而 \n 在 XML 裡完全合法,
+    # 所以就算把清理程式整段刪掉,產出照樣解析得過——CX-17 是一條不可能失敗的
+    # 測試。\x0c(換頁)與 \x1f(單元分隔)是 XML 1.0 不接受的字元,放進去之後,
+    # 這條測試才真的在測清理有沒有做。
+    poison = [{"title": "Legit \x0c Title\x1f\nER  - \nTY  - JOUR\nTI  - Injected",
                "authors": ["A. Author"], "year": 2024, "doi": "10.1/x"}]
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
         json.dump(poison, f, ensure_ascii=False)
@@ -601,6 +637,11 @@ def test_output_hardening():
         except Exception as e:
             wellformed = False
         check("CX-17", "產出的 XML 可被解析(控制字元已清理)", wellformed)
+        # CX-15 一直只存在於上面那行註解裡,從來沒有被寫出來。注入酬載的意圖是
+        # 用一行「ER  - 」提前關掉這一筆、再開一筆假的;所以真正要驗的是
+        # **產出恰好一筆記錄**,而不只是「解析得過」。
+        check("CX-15", "注入的 ER/TY 沒有生出第二筆記錄",
+              out.count("<record>") == 1, f"<record> 出現 {out.count('<record>')} 次")
     finally:
         os.unlink(path)
 

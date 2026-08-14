@@ -93,6 +93,18 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 
 所有 API 呼叫都用 `scripts/lit_api.py`(純 Python 標準函式庫，無需安裝任何套件)，不要自己手刻 HTTP 請求——腳本已內建速率限制與 429 重試，手刻容易被封。
 
+**先確定直譯器叫什麼再照抄下面的指令。** `python` 不一定在 PATH 上:macOS 12.3 之後 Apple 移除了 `/usr/bin/python`，Debian／Ubuntu 預設只有 `python3`，Windows 上有時只有 `py`。下面每一行都寫 `python`，直接照抄在這三種環境都會得到「找不到指令」——而那個錯誤看起來像 skill 壞了，不像少了一個別名。
+
+```bash
+# 先跑這一行，把可用的直譯器記成 $PY，下面所有 python 都換成 $PY
+for c in python3 python py; do command -v "$c" >/dev/null 2>&1 && PY="$c" && break; done; echo "使用 $PY"
+```
+
+```powershell
+# PowerShell
+foreach ($c in 'python','py','python3') { if (Get-Command $c -EA SilentlyContinue) { $PY = $c; break } }; "使用 $PY"
+```
+
 ```bash
 python scripts/lit_api.py search "query keywords" --limit 10 --year 2020-   # 找文獻(含摘要、被引數)
 python scripts/lit_api.py snowball "DOI:10.1234/abc" --direction both       # 引文滾雪球：citations=誰引它(追新) references=它引誰(追經典)
@@ -209,7 +221,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 74 個凍結案例，不打 API，秒級
+python evals/test_regression.py     # 75 個凍結案例，不打 API，秒級
 python evals/mutation_check.py      # 驗證測試本身有偵測力(9 個突變都須被抓到)
 ```
 

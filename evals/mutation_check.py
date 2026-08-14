@@ -5,12 +5,17 @@
 每個突變都**必須**讓至少一個指定案例失敗，否則該防護等於沒有測試保護。
 
 執行：python evals/mutation_check.py
-任何情況下都會復原原始檔(finally)，但仍建議在乾淨的 git 工作樹上跑。
+
+突變寫在**整棵樹的暫存複本**上，原始 repo 全程唯讀。以前是就地改 scripts/
+底下那支正式檔案、再靠 finally 複原：只要中途被 Ctrl-C、當掉或斷電，留在磁碟上
+的就是一份被刻意改壞的正式程式,外加一個 .mutbak。一支用來建立信心的工具，
+不該把「不要在跑到一半時關掉」也算進它的前提。
 """
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SKILL = os.path.dirname(BASE)
@@ -60,16 +65,29 @@ MUTATIONS = [
 ]
 
 
-def run_suite():
-    p = subprocess.run([sys.executable, os.path.join(BASE, "test_regression.py")],
+def run_suite(root):
+    """在 root 這棵樹上跑迴歸測試。root 是暫存複本，不是原始 repo。"""
+    p = subprocess.run([sys.executable, os.path.join(root, "evals", "test_regression.py")],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       cwd=SKILL)
+                       cwd=root)
     out = p.stdout or ""
     return {ln.split()[1] for ln in out.splitlines() if ln.startswith("[FAIL]")}, out
 
 
 def main():
-    baseline_fails, out = run_suite()
+    work = tempfile.mkdtemp(prefix="lit-mutation-")
+    root = os.path.join(work, "repo")
+    shutil.copytree(SKILL, root, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", "*.pyc", "*.mutbak", "*.zip"))
+    print("突變寫在暫存複本上，原始 repo 唯讀：%s\n" % root)
+    try:
+        return _run(root)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _run(root):
+    baseline_fails, out = run_suite(root)
     if baseline_fails:
         print(f"⚠️ 未突變時已有失敗案例 {sorted(baseline_fails)} —— 先修好再跑突變測試")
         sys.exit(1)
@@ -77,7 +95,7 @@ def main():
 
     weak = []
     for desc, fname, orig, mutant, expect in MUTATIONS:
-        target = os.path.join(SKILL, "scripts", fname)
+        target = os.path.join(root, "scripts", fname)
         bak = target + ".mutbak"
         shutil.copy(target, bak)
         try:
@@ -87,7 +105,7 @@ def main():
                 weak.append((desc, "目標片段不存在"))
                 continue
             open(target, "w", encoding="utf-8").write(src.replace(orig, mutant, 1))
-            fails, _ = run_suite()
+            fails, _ = run_suite(root)
             caught = sorted(fails & set(expect))
             if caught:
                 print(f"✅ 抓到 | {desc}\n   失敗案例：{caught}")
@@ -98,7 +116,7 @@ def main():
             shutil.copy(bak, target)
             os.unlink(bak)
 
-    after, _ = run_suite()
+    after, _ = run_suite(root)
     print(f"\n復原檢查：{'全綠' if not after else f'仍有失敗 {sorted(after)}(復原失敗！)'}")
     if weak or after:
         print(f"\n{len(weak)} 個防護缺乏測試偵測力：")

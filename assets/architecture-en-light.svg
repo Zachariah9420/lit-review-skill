@@ -67,7 +67,7 @@
 <text x="806" y="320" font-size="13" fill="#0b0b0b">evidence levels</text>
 <text x="806" y="345" font-size="12.5" fill="#52514e">[abstract] [full text p.X] [?]</text>
 <circle cx="793" cy="364" r="3" fill="#eda100"/>
-<text x="806" y="368" font-size="13" fill="#0b0b0b">74-case regression suite</text>
+<text x="806" y="368" font-size="13" fill="#0b0b0b">75-case regression suite</text>
 <rect x="1012" y="148" width="210" height="302" rx="12" fill="#e87ba4" fill-opacity="0.07" stroke="#e87ba4" stroke-width="1.6"/>
 <rect x="1020" y="148" width="194" height="5" rx="2.5" fill="#e87ba4"/>
 <text x="1028" y="188" font-size="17" font-weight="700" fill="#0b0b0b">Output</text>

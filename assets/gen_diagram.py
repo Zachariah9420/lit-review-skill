@@ -51,7 +51,7 @@ COLS_ZH = [
         ("雙路徑身分閘門", 0),
         ("對抗式自查", 0),
         ("證據層級", 0), ("[摘要] [全文 p.X] [?]", 1),
-        ("74 案例迴歸測試", 0),
+        ("75 案例迴歸測試", 0),
     ]),
     ("產出", "OUTPUT", [
         ("查核報告", 0), ("給作者修改清單", 0),
@@ -87,7 +87,7 @@ COLS_EN = [
         ("dual-path identity gate", 0),
         ("adversarial self-audit", 0),
         ("evidence levels", 0), ("[abstract] [full text p.X] [?]", 1),
-        ("74-case regression suite", 0),
+        ("75-case regression suite", 0),
     ]),
     ("Output", "OUTPUT", [
         ("audit report", 0), ("author fix list", 0),
@@ -153,7 +153,7 @@ def build(theme):
     sy = 528
     p.append(f'<rect x="52" y="{sy}" width="{W-104}" height="56" rx="10" fill="none" stroke="{t["hairline"]}" stroke-width="1.2"/>')
     p.append(f'<text x="{W/2}" y="{sy+24}" font-size="13.5" font-weight="600" text-anchor="middle" fill="{t["ink"]}">{esc("not found ≠ nonexistent    ·    memory may suspect, only evidence convicts    ·    every verdict carries its evidence level" if LANG == "en" else "查不到 ≠ 不存在    ·    記憶只能起疑，不能作證    ·    每個判定附證據層級")}</text>')
-    p.append(f'<text x="{W/2}" y="{sy+44}" font-size="11.5" text-anchor="middle" fill="{t["muted"]}">{esc("a lookup that failed is never reported as a citation that does not exist" if LANG == "en" else "not found ≠ nonexistent · memory may suspect, only evidence convicts")}</text>')
+    p.append(f'<text x="{W/2}" y="{sy+44}" font-size="11.5" text-anchor="middle" fill="{t["muted"]}">{esc("a lookup that failed is never reported as a citation that does not exist" if LANG == "en" else "查詢失敗永遠不會被寫成這篇文獻不存在")}</text>')
     p.append('</svg>')
     return "\n".join(p)
 

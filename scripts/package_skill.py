@@ -56,7 +56,8 @@ def main():
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for p in files_list:
             f = os.path.basename(p)
-            if f in SKIP_FILES or f.endswith(SKIP_EXT) or f.startswith(".env"):
+            if (f in SKIP_FILES or f.endswith(SKIP_EXT)
+                or f.startswith(".env") or f.endswith(".env")):
                 continue
             if not os.path.isfile(p) or os.path.abspath(p) == out:
                 continue

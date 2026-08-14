@@ -129,7 +129,7 @@ email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給�
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 74 個凍結案例，不打網路，秒級跑完
+python evals/test_regression.py     # 75 個凍結案例，不打網路，秒級跑完
 python evals/mutation_check.py      # 把 9 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
