@@ -24,7 +24,19 @@ if hasattr(sys.stdout, "reconfigure"):
 HEADING_RE = re.compile(
     r"(?m)^[\s#\d.、]*(參考文獻|参考文献|References|REFERENCES|Bibliography|文獻目錄)\s*[::]?\s*$")
 HEADING_LOOSE_RE = re.compile(r"(參考文獻|参考文献|References|REFERENCES|Bibliography|文獻目錄)")
-CITE_RE = re.compile(r"\[(\d{1,3}(?:\s*[,,\-–—]\s*\d{1,3})*)\]")
+# 這個字元類裡的「兩個逗號」其實是 U+002C 寫了兩次（初版就是如此），所以全形
+# 「，」、頓號「、」與分號從來沒有被支援過——中文論文寫 [1，2] 是常態，而整個
+# 中括號會**完全比對不到**，那一筆引用於是從查核裡消失。用跳脫寫法列出來，
+# 免得下一次有人看不出兩個字元長得一樣。
+CITE_SEPS = r",，、;；"
+CITE_RE = re.compile(r"\[(\d{1,3}(?:\s*[" + CITE_SEPS + r"\-–—]\s*\d{1,3})*)\]")
+# 長得像引用、但 CITE_RE 吃不下的中括號（IEEE 的 [1, p. 45]、[2, Fig. 3]）。
+# 以前這種整個不被比對，而 unparsed_citation_tokens 仍然回報 []，
+# 等於工具宣稱它解析了它其實沒看見的東西。
+CITE_LOOSE_RE = re.compile(r"\[\s*\d{1,3}[^\]]{0,40}\]")
+# 跨中括號的範圍寫法：[1]-[3]。兩個中括號各自被當成獨立引用，中間那一橫是內文，
+# 於是 2 永遠不會被展開，然後報告說「列了沒引：[2]」。
+CITE_SPAN_RE = re.compile(r"\[\s*(\d{1,3})\s*\]\s*[-–—]\s*\[\s*(\d{1,3})\s*\]")
 # 參考文獻條目：支援 [1] 與 Vancouver/AMA 的 "1." "1)" 樣式。
 # 醫學與藥學期刊幾乎一律用 Vancouver；只認 [n] 會讓列表解析成 0 筆，
 # 然後把全部文內引用誤報成「引了沒列」——沉默且自信的錯誤答案。
@@ -48,6 +60,12 @@ def read_text(path, as_json=False):
                  "若原本是純文字請改回 .txt/.md 再跑", as_json, file=path)
         except KeyError:
             fail(f"{path} 是 zip 但缺少 word/document.xml，不是 Word 文件", as_json, file=path)
+        # 段落內的換行與定位點是 <w:br/> 與 <w:tab/>,不是 <w:t> 的內容。只抓
+        # <w:t> 再用 "" 接起來,會讓「同一段裡用 shift+enter 分行的三筆參考文獻」
+        # 黏成一行——而條目比對 REF_LINE_RE 是行首錨定的,於是只認得出第一筆,
+        # 另外兩筆變成「引了沒列」。先把它們換成帶內容的 <w:t>,讓抓取看得到。
+        xml = re.sub(r"<w:br\s*/?>", "</w:t><w:t>\n</w:t><w:t>", xml)
+        xml = re.sub(r"<w:tab\s*/?>", "</w:t><w:t>\t</w:t><w:t>", xml)
         paras = re.split(r"</w:p>", xml)
         # 必須解 XML 字元參照：Word 會把 &quot; 與 en-dash(&#x2013;)寫成參照，
         # 不解碼會讓「[8–10]」這種範圍引用抓不到，引號也會變成 &quot; 雜訊
@@ -65,7 +83,7 @@ def read_text(path, as_json=False):
 def expand(token_group, dropped=None):
     """'8-10' -> [8,9,10];'1, 2' -> [1,2]。無法展開者記入 dropped，不靜默丟棄。"""
     out = []
-    for tok in re.split(r"[,,]", token_group):
+    for tok in re.split(r"[" + CITE_SEPS + r"]", token_group):
         tok = tok.strip()
         m = re.match(r"^(\d+)\s*[\-–—]\s*(\d+)$", tok)
         if m:
@@ -75,7 +93,12 @@ def expand(token_group, dropped=None):
             elif dropped is not None:        # 逆序或異常大範圍：回報而非默默忽略
                 dropped.append(tok)
         elif tok.isdigit():
-            out.append(int(tok))
+            # 參考文獻從 1 起編。抓到 [0] 幾乎一定是程式碼裡的陣列索引,
+            # 當成引用會憑空生出一筆「引了沒列」。
+            if int(tok) >= 1:
+                out.append(int(tok))
+            elif dropped is not None:
+                dropped.append(tok)
         elif tok and dropped is not None:
             dropped.append(tok)
     return out
@@ -99,9 +122,29 @@ def main():
             split_at, heading_mode = m.start(), "loose"
     body, reflist = (text, "") if split_at is None else (text[:split_at], text[split_at:])
 
+    # 引用不會在參考文獻標題那一行就停止:附錄、致謝、作者簡介、審稿回覆都會引。
+    # 以前只掃 body(標題之前),標題之後的引用整段不受查核——一篇在附錄裡引了
+    # 兩筆不存在文獻的論文,會印出「✅ 三向核對全部通過」並回 0。
+    # 掃全文,再把「被當成清單條目消耗掉的那個編號」扣掉:條目開頭的 [1] 是標號,
+    # 不是引用。用等長空白取代,行的結構與其餘內容都不動。
+    reflist_wo_markers = REF_LINE_RE.sub(lambda m: " " * len(m.group(0)), reflist)
+    scan_text = body + reflist_wo_markers
+    # markdown 的程式碼區塊裡,arr[0]、v[2] 這種陣列索引長得跟引用一模一樣。
+    if args.file.lower().endswith((".md", ".markdown")):
+        scan_text = re.sub(r"(?ms)^\s*```.*?^\s*```\s*$", "\n", scan_text)
+        scan_text = re.sub(r"`[^`\n]*`", " ", scan_text)
+
     cited, dropped_tokens = set(), []
-    for m in CITE_RE.finditer(body):
+    for m in CITE_SPAN_RE.finditer(scan_text):
+        a, b = int(m.group(1)), int(m.group(2))
+        if a <= b and b - a <= 300:
+            cited.update(range(a, b + 1))
+    for m in CITE_RE.finditer(scan_text):
         cited.update(expand(m.group(1), dropped_tokens))
+    # 長得像引用卻沒被 CITE_RE 吃下的中括號,要說出來而不是當作不存在。
+    for m in CITE_LOOSE_RE.finditer(scan_text):
+        if not CITE_RE.fullmatch(m.group(0)):
+            dropped_tokens.append(m.group(0).strip())
 
     listed_seq = [int(m.group(1) or m.group(2)) for m in REF_LINE_RE.finditer(reflist)]
     listed = set(listed_seq)
