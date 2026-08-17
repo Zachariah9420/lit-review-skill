@@ -6,6 +6,11 @@ An agent skill that turns Claude (or Codex, or any capable LLM agent) into a rig
 
 Built by a grad student finishing a thesis, battle-tested on real thesis chapters. No API keys required to start.
 
+> **Before you install: the working language is Traditional Chinese.**
+> This README is English, but `SKILL.md` — the file the model actually follows — is mostly Chinese, and so is what you get back. `scripts/lit_api.py` returns its status fields in Chinese (`✅ 有合法免費全文`, `❓ 撤稿查詢不完整`, `查詢未完整完成…不可解讀為查無`), and the report templates are written in Chinese throughout.
+>
+> What still works in English regardless: **every search is run in English** against Semantic Scholar, Crossref, arXiv and OpenAlex, and every bibliographic field comes back in the source language of the paper. So the literature layer is language-neutral; the wrapper around it is not. Claude will translate the wrapper if you ask, but nothing in the repo does that for you, and the frozen tests assert the Chinese strings.
+
 ## Architecture
 
 <picture>
