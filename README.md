@@ -171,8 +171,8 @@ handed to you** — a package that leaks is worse than no package.
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 75 frozen cases, no network, seconds
-python evals/mutation_check.py      # re-introduces 9 fixed bugs; each must be caught
+python evals/test_regression.py     # 113 frozen cases, no network, seconds
+python evals/mutation_check.py      # re-introduces 44 fixed bugs; each must be caught
 ```
 
 `test_regression.py` freezes every defect found so far — each case is tagged with where it came from (`TS-*` black-box stress test, `CX-*` independent Codex source review, `DR-*` design review). It calls the production functions directly with frozen candidate data, so it needs no API access and runs in seconds.

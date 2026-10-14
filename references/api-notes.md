@@ -71,7 +71,7 @@
 - **降級檢查**：即使 title/author 路徑通過，以下任一成立即降為 `similar_found`——年份差 >1、使用者給的作者無一重疊、使用者給了年份但候選無年份、**另有相似度僅差 <0.03 的「不同」文獻**。
 - **跨來源印證**：同一篇論文的 Crossref/S2 兩筆候選**不算歧義**（`same_work()` 依 DOI 去重），會記在 `identity_basis.cross_source_corroboration`。
 
-- `match.author_overlap`：查詢作者姓氏出現在候選作者中的比例；低於 0.5 且 title_sim 又不高時，幾乎可斷定不是同一篇。
+- `match.author_overlap`：查詢作者姓氏出現在候選作者中的比例；低於 0.5 且 title_sim 又不高時，幾乎可斷定不是同一篇。姓氏比對同時認得「Family, Given」與「Given Family」兩種寫法、含冠詞或介系詞的姓（van der Linden、de la Cruz）與 Jr./Sr. 後綴，複合姓在姓氏部分完整寫出時視為不同人（García López ≠ Pérez López），只剩首字母的名字（如「J.」）不具鑑別力、不計入比對。
 - `match.year_diff`:1 年差常見(online-first vs 紙本),≥2 年才視為書目錯誤。
 
 ## Google Scholar 工具(中文文獻用)
@@ -90,7 +90,8 @@
 
 ## versions(版本解析)與 export-xml(EndNote 匯出)
 
-- `versions` 的判定順序：**S2 版本合併訊號優先**(S2 對 arXiv 論文的記錄若帶非 10.48550 的 DOI，即正式版，再以 Crossref 取權威書目)→ 退 Crossref 標題搜尋(title_sim≥0.93，排除 arXiv 的 DataCite DOI 與空標題候選)。「查無正式版」≠ 不存在——會議論文集(NeurIPS/ICLR 等)常不註冊 Crossref DOI。
+- `versions` 的輸入與判定順序：輸入可為 `ARXIV:` 編號（前導空白與結尾的 `vN` 版本後綴先清掉）、DOI（`DOI:` 前綴或直接貼 `https://doi.org/…` 網址皆可）或完整標題。訊號由強到弱：①**S2 版本合併訊號**（S2 對 arXiv 論文的記錄若帶非 10.48550 的 DOI，仍要再向 Crossref 取權威書目覆核）：Crossref 查無該 DOI（404，DataCite 的 Zenodo／OSF 之類常見）或它是預印本伺服器的紀錄（posted-content）→ 不採用，原因記在 `s2_note`，改走後面的訊號；只有 Crossref 逾時或 5xx 查詢失敗時才採用 S2 給的 DOI，標 confidence=medium 與「未經 Crossref 覆核」；②arXiv 上**作者自填的期刊 DOI**——輸入為 `ARXIV:` 且前一步還沒找到正式版時就查（S2 有記錄但尚未合併出正式版是最常見的情況，不是只有 S2 失敗才查）。採為正式版的條件：Crossref 查得到、不是預印本、至少一半作者對得上（author_overlap≥0.5）、題目相關（title_sim≥0.3；預印本只有一位作者時，姓氏比對的鑑別力低，題目門檻拉高到 0.5）；Crossref 查無此 DOI、查詢失敗或它指向另一份預印本，只在 `arxiv_record.journal_doi_status` 註明原因、不推薦改引；作者或題目對不上（此欄位實務上常被填成伴隨論文、資料集或整本論文集的 DOI）則列入 `possible_published_versions`（basis=arxiv_declared_doi_mismatch）；③Crossref 標題搜尋（title_sim≥0.93，排除預印本與空標題候選，以及年份比預印本早超過一年的候選；取標題最像的一筆，標題相似度相同時作者重疊高者優先）；④Crossref 第一作者搜尋（至少一半作者對得上、年份不早於預印本前一年、題目相近），專找改了標題才正式發表的版本，只列為 `possible_published_versions`（最多 3 筆，依 author_overlap 再依 title_sim 由高到低排序、confidence=low）供人工核對，不自動改引。
+- `versions` 永遠不把預印本當正式版：Crossref 標為 posted-content 的紀錄（SSRN、Research Square、bioRxiv、medRxiv 等預印本伺服器）與 arXiv 自己的 DataCite DOI（10.48550）在①②③④四步都排除（①的覆核見上）。輸入本身若是已正式發表的 DOI（Crossref 查得到、不是預印本），該紀錄就是正式版（`version_link=input_doi_is_published`，建議寫「可直接引用」），不會再去搜一個同名的別個 DOI。已找到正式版、但有來源查詢失敗（`crossref_error`／`s2_error`／`arxiv_error`）時，結果仍可用，但 confidence 最高 medium，`confidence_note` 註明哪一條查詢失敗、更強的訊號未能核對；輸入 DOI 本身就是正式版者除外。「查無正式版」≠ 不存在——會議論文集（NeurIPS/ICLR 等）常不註冊 Crossref DOI；查無時警告很多期刊不接受 arXiv 預印本（不再說引 arXiv 版即可）。S2 與 arXiv 都回查無（不是查詢失敗）時，回 `ARXIV_ID_NOT_FOUND` 並以非零離開（沒有任何來源證實該編號存在，不替它背書）。來源證實該編號存在、卻拿不到標題時，不做任何搜尋，同樣以非零離開並明說「沒有標題可供比對」（不說成「搜尋查無」）。
 - `export-xml` 產 EndNote XML:entry 的 `research_notes` 欄+品質紅旗+arXiv 編號會進 EndNote 的 Research Notes——把查核結論隨文獻帶進引用管理軟體。輸入吃本工具任何存檔 JSON 或 pick 輸出；實務流程：pick 選定 → agent 在 JSON 加 research_notes(支持度/證據句)→ export-xml。
 - 撤稿查詢 `retract`:Crossref update-notice(含 Retraction Watch 併入資料),retraction/expression_of_concern 級 → 🚨 不可引用；correction 級 → ⚠️ 確認更正內容。**無記錄 ≠ 保證沒事**(覆蓋不完備，尤其非英文期刊)。實測：Wakefield 1998 抓到 2004 部分撤回+2010 全文撤稿。
 

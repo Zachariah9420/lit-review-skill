@@ -296,8 +296,10 @@ def norm_crossref(it):
     }
 
 
-def crossref_search(title, rows=5):
+def crossref_search(title, rows=5, author=None):
     params = {"query.bibliographic": title, "rows": str(rows)}
+    if author:
+        params["query.author"] = author      # versions 用作者找改名後的正式版
     mailto = os.environ.get("CROSSREF_MAILTO")
     if mailto:
         params["mailto"] = mailto
@@ -463,60 +465,189 @@ def cmd_export_xml(args):
     print('<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(root, encoding="unicode"))
 
 
+def _clean_doi(d):
+    """「https://doi.org/10.x/y」「doi:10.x/y」都正規化成「10.x/y」。arXiv 的 doi 欄位與 S2 的
+    externalIds 偶爾帶網址前綴；不清掉的話，「是不是 arXiv 自己的 DOI」這個判斷會被繞過。"""
+    return re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", "", (d or "").strip(), flags=re.I)
+
+
+def _is_preprint(c):
+    """arXiv 自己的 DataCite DOI（10.48550），以及 Crossref 標成 posted-content 的紀錄
+    （SSRN、Research Square、bioRxiv、medRxiv 等預印本伺服器）都不是正式發表。把它們當成
+    「正式版」建議改引，等於叫使用者把一份預印本換成另一份預印本——很多期刊兩份都不收。"""
+    return (_clean_doi(c.get("doi")).lower().startswith("10.48550")
+            or (c.get("type") or "") == "posted-content")
+
+
+def _fetch_work(doi, out):
+    """取回一個 DOI 的 Crossref 書目。回（記錄，狀態）：狀態是 "ok"、"not_found"（404：Crossref
+    沒有這個 DOI，DataCite 的 Zenodo／OSF／PsyArXiv 都會這樣）或 "error"（逾時、5xx，已記進
+    crossref_error）。三種要分開：查無不是失敗，失敗不是查無。"""
+    try:
+        cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(doi, safe="/"),
+                                 crossref_headers(), 1.0, "crossref"))
+        return norm_crossref(cr.get("message", {})), "ok"
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, "not_found"
+        out["crossref_error"] = str(e)
+        return None, "error"
+    except OSError as e:
+        out["crossref_error"] = str(e)
+        return None, "error"
+
+
+def _fits_preprint(cand, title, pre_authors):
+    """候選跟預印本是不是同一研究：作者至少一半對得上、題目相近。只有一位作者時題目門檻
+    拉高——比對只靠一個姓氏，常見姓氏下同一人的不同論文很多。回 (是否符合, 作者重疊, 題目相似)。"""
+    ts = title_sim(title, cand.get("title")) if title else 0.0
+    ov = author_overlap(pre_authors, cand.get("authors"))
+    named = [a for a in (pre_authors or []) if _name_key(a)]
+    floor = 0.3 if len(named) > 1 else 0.5
+    return (ov is not None and ov >= 0.5 and ts >= floor), ov, ts
+
+
+def _resolve_declared_doi(out, jdoi, title, pre_authors, possible):
+    """作者在 arXiv 自填的期刊 DOI。它等於作者說「後來發表在這裡」，但這個欄位實務上也常填成
+    伴隨論文、資料集、整本論文集的 DOI。所以：取回 Crossref 書目，作者與題目對得上才當成
+    正式版；對不上只列為「可能」；Crossref 查無此 DOI 就記下來，不推薦改引。"""
+    cand, status = _fetch_work(jdoi, out)
+    if status == "not_found":
+        out["arxiv_record"]["journal_doi_status"] = (
+            "Crossref 查無此 DOI（可能打錯，或不是 Crossref 註冊的 DOI）：未當成正式版")
+        return
+    if status == "error":
+        out["arxiv_record"]["journal_doi_status"] = "Crossref 查詢失敗，未能核對：見 crossref_error"
+        return
+    fits, ov, ts = _fits_preprint(cand, title, pre_authors)
+    if _is_preprint(cand):
+        out["arxiv_record"]["journal_doi_status"] = "作者自填的 DOI 指向另一份預印本，不是正式發表"
+    elif fits:
+        out["published_version"] = cand
+        out["version_link"] = "arxiv_journal_ref"
+    else:
+        possible.append(dict(cand, basis="arxiv_declared_doi_mismatch",
+                             author_overlap=ov, title_sim=ts,
+                             note="作者在 arXiv 自填的 DOI，但作者或題目與預印本對不上："
+                                  "可能是相關論文、資料集或整本論文集"))
+
+
+def _describe(p):
+    """「已有正式發表版(…)」括號裡的那段：欄位缺的時候寫「未知」，不要印 None。"""
+    return "%s, %s, DOI %s" % (p.get("container") or p.get("type") or "來源未知",
+                                p.get("year") or "年份未知", p.get("doi"))
+
+
 def cmd_versions(args):
-    """preprint ↔ 正式版解析：回報同一研究的版本鏈與引用建議。"""
+    """preprint ↔ 正式版解析：回報同一研究的版本鏈與引用建議。
+
+    找正式版的訊號由強到弱：① S2 版本合併（其記錄帶非 arXiv 的 DOI，且 Crossref 查得到、不是
+    預印本）；② 作者在 arXiv 自填的期刊 DOI（取回 Crossref 書目、作者與題目對得上才算）；
+    ③ Crossref 標題搜尋（標題近乎相同，年份不早於預印本，取最像的一筆）；④ Crossref 作者搜尋
+    （改了標題才發表的版本，只列為「可能」，不自動改引）。
+    arXiv 自己的 DOI 與預印本伺服器（posted-content）在每一層都不算正式版。
+    """
     ident = args.id.strip()
+    is_arxiv = ident.upper().startswith("ARXIV:")
     out = {"query": ident, "arxiv": None, "s2_record": None, "published_version": None}
     title = None
-    if ident.upper().startswith("ARXIV:"):
-        out["arxiv"] = ident[6:]
+    pre_authors, pre_year = [], None   # 預印本的作者與年份：用來找改了標題才正式發表的版本
+    # 存在性與訊號來源都用明確的旗標記，不從欄位有沒有值去推：DOI 路徑的 s2_record 是輸入 DOI
+    # 自己的紀錄，拿它的 DOI 當「S2 合併訊號」會把純靠標題推定的版本說成有合併佐證。
+    confirmed = False                  # 有任何來源回了這個識別碼的記錄
+    via_s2_merge = False               # 正式版是 S2 版本合併給的
+    s2_not_found = arxiv_not_found = False
+    possible = []
+    if is_arxiv:
+        # 前導空白與版本後綴（2410.01234v2）都不是編號的一部分：帶著送出去，S2 會回 404，
+        # 接著就被說成「編號不存在，請確認是否打錯」——其實是我們自己沒清乾淨。
+        out["arxiv"] = re.sub(r"v\d+$", "", ident[6:].strip(), flags=re.I)
         try:
             sp = s2_get_paper("ARXIV:" + out["arxiv"])
+            confirmed = True
             title = sp.get("title")
+            pre_authors, pre_year = sp.get("authors") or [], sp.get("year")
             out["s2_record"] = {k: sp.get(k) for k in ("title", "year", "venue", "doi")}
-            pub_doi = sp.get("doi")
-            if pub_doi and not pub_doi.startswith("10.48550"):
-                # S2 會合併同一研究的版本：其記錄帶非 arXiv DOI 即正式版，以 Crossref 取權威書目
-                try:
-                    cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(pub_doi, safe="/"),
-                                             crossref_headers(), 1.0, "crossref"))
-                    out["published_version"] = norm_crossref(cr.get("message", {}))
-                except OSError:
-                    out["published_version"] = {"doi": pub_doi, "source": "semanticscholar(未經Crossref覆核)"}
+            pub_doi = _clean_doi(sp.get("doi"))
+            if pub_doi and not pub_doi.lower().startswith("10.48550"):
+                # S2 會合併同一研究的版本：其記錄帶非 arXiv DOI 通常就是正式版。但仍要 Crossref
+                # 查得到、而且不是預印本伺服器——S2 也會把 SSRN、bioRxiv 合併進來，那不是正式版；
+                # Crossref 查無（DataCite 的 Zenodo／OSF 之類）也不能原樣當成「已有正式發表版」。
+                cand, status = _fetch_work(pub_doi, out)
+                if status == "ok" and _is_preprint(cand):
+                    out["s2_note"] = ("S2 合併的 DOI %s 指向預印本伺服器（%s），不算正式版；改以標題與作者搜尋"
+                                      % (pub_doi, cand.get("type")))
+                elif status == "ok":
+                    out["published_version"] = cand
+                    via_s2_merge = True
+                elif status == "not_found":
+                    out["s2_note"] = ("S2 合併的 DOI %s 在 Crossref 查無（可能是 DataCite 的 DOI），"
+                                      "未當成正式版；改以標題與作者搜尋" % pub_doi)
+                else:
+                    # 覆核失敗（逾時、5xx）：S2 的訊號仍在，採用但明說未經覆核、信心降為 medium
+                    out["published_version"] = {"doi": pub_doi, "source": "semanticscholar（未經 Crossref 覆核）"}
+                    via_s2_merge = True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                s2_not_found = True
+                # S2 查無此 arXiv 記錄（新文獻的索引延遲很常見）。這是「沒有記錄」不是
+                # 「查詢失敗」：以前一併記成 s2_error，下游就把它說成「請稍後重試」並回非零；
+                # 版本鏈仍可由下面的 arXiv 標題 + Crossref 標題搜尋推定（DOI 分支早就這樣分）。
+                out["s2_note"] = ("Semantic Scholar 查無此 arXiv 記錄（HTTP 404，非查詢失敗）；"
+                                  "版本鏈改由 arXiv 標題經 Crossref 推定，無 S2 版本合併訊號佐證")
+            else:
+                out["s2_error"] = str(e)
         except OSError as e:
             out["s2_error"] = str(e)
-        if title is None:
-            try:  # S2 失敗時退 arXiv API 拿標題，供後續 Crossref 標題搜尋
+        # 還沒有正式版就一律查一次 arXiv。以前只在 S2 失敗時才查，於是 S2 有記錄、只是還沒合併
+        # 出正式版——最常見的情況——作者在 arXiv 自填的期刊 DOI 永遠讀不到。
+        if not out["published_version"]:
+            entries = None
+            try:
                 entries = arxiv_query(None, 1, id_list=out["arxiv"])
-                if entries:
-                    title = entries[0]["title"]
-                    out["arxiv_record"] = {"title": title, "year": entries[0]["year"]}
             except OSError as e:
                 out["arxiv_error"] = str(e)
+            if entries:
+                confirmed = True
+                e0 = entries[0]
+                out["arxiv_record"] = {"title": e0.get("title"), "year": e0.get("year")}
+                # 標題、作者、年份各自回填：S2 有題目沒作者（很常見）時，作者要拿 arXiv 的，
+                # 否則作者搜尋整個跳過、自填 DOI 也因為「對不上作者」永遠只能降成「可能」。
+                title = title or e0.get("title")
+                pre_authors = pre_authors or e0.get("authors") or []
+                pre_year = pre_year or e0.get("year")
+                jdoi = _clean_doi(e0.get("doi"))
+                if jdoi and not jdoi.lower().startswith("10.48550"):
+                    out["arxiv_record"]["journal_doi"] = jdoi
+                    _resolve_declared_doi(out, jdoi, title, pre_authors, possible)
+            elif entries is not None:
+                arxiv_not_found = True
     elif looks_like_doi(ident):
         # 只認 DOI: 前綴(不分大小寫)或真正的 10.xxxx/ 格式——先前「含斜線就當 DOI」
         # 會把「Risk/Benefit Analysis」這種正常標題誤送 DOI 端點
-        doi = re.sub(r"^doi:", "", ident, flags=re.I)
-        try:
-            cr = json.loads(http_get(CROSSREF_BASE + "/works/" + urllib.parse.quote(doi, safe="/"),
-                                     crossref_headers(), 1.0, "crossref"))
-            n = norm_crossref(cr.get("message", {}))
+        doi = _clean_doi(ident)
+        n, status = _fetch_work(doi, out)
+        if status == "ok":
+            confirmed = True
             title = n.get("title")
+            pre_authors, pre_year = n.get("authors") or [], n.get("year")
             out["s2_record"] = n
-        except urllib.error.HTTPError as e:
-            # 這兩個 except 以前都是 pass。兩邊都失敗時 title 仍是 None,流程會走到
-            # 最後印出「無法解析版本鏈，請確認輸入為 DOI:x / ARXIV:x / 完整標題」
-            # ——對一個格式完全正確的 DOI,把伺服器的 429/500 說成使用者打錯字。
-            # 錯誤歸錯誤:記下來,下游才有機會回非零並說出真正的原因。
-            if e.code != 404:
-                out["crossref_error"] = str(e)
+            if not _is_preprint(n):
+                # 輸入的 DOI 本身就是正式發表：它就是正式版，不必再去搜一個同名的別篇來「改引」
+                out["published_version"] = n
+                out["version_link"] = "input_doi_is_published"
         try:
             sp = s2_get_paper("DOI:" + doi)
+            confirmed = True
             out["arxiv"] = sp.get("arxiv")
             title = title or sp.get("title")
+            pre_authors = pre_authors or sp.get("authors") or []
+            pre_year = pre_year or sp.get("year")
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 out["s2_error"] = str(e)
+        except OSError as e:
+            out["s2_error"] = str(e)
     else:
         title = ident
         if not has_latin(ident):
@@ -528,35 +659,125 @@ def cmd_versions(args):
             }, ensure_ascii=False, indent=1))
             sys.exit(1)
 
+    title_searched = False
     if title and not out["published_version"]:
+        title_searched = True
         pubs = []
         try:
             for c in crossref_search(title, rows=5):
-                if (c.get("doi") or "").startswith("10.48550"):
-                    continue  # arXiv 自身的 DataCite DOI 不算正式版
-                if c.get("title") and title_sim(title, c.get("title")) >= 0.93:
-                    pubs.append(c)
+                if _is_preprint(c):
+                    continue  # arXiv 自己的 DOI、SSRN／Research Square 等預印本伺服器都不算正式版
+                ts = title_sim(title, c.get("title")) if c.get("title") else 0.0
+                if ts < 0.93:
+                    continue
+                if pre_year and c.get("year") and c["year"] < pre_year - 1:
+                    continue  # 比預印本早兩年以上的同名論文不是它的正式版
+                pubs.append(dict(c, title_sim=ts, author_overlap=author_overlap(pre_authors, c.get("authors"))))
         except Exception as e:
             out["crossref_error"] = str(e)
         if pubs:
+            # 取最像的一筆，不是 Crossref 排第一的那筆；作者對得上的優先
+            pubs.sort(key=lambda c: (c["title_sim"], c["author_overlap"] or 0.0), reverse=True)
             out["published_version"] = pubs[0]
 
+    # 正式版常常改標題：預印本「X: A Y Approach」發表時可能變成「Y for X」。上面那段只認
+    # 標題相似度 ≥ 0.93，改名後的正式版一定漏掉，接著的結論就是「查無正式版」——而很多期刊
+    # 不收 arXiv，照這個結論引了預印本，審稿時才被退。人工查證的作法是用作者找：同一組作者、
+    # 年份不早於預印本、題目相近。這裡照做，但只列為「可能的正式版」：同一組作者的不同論文
+    # 也長這樣，所以不自動改引、一律要人工核對。
+    named = [a for a in pre_authors if _name_key(a)]
+    author_searched = False
+    if title and named and not out["published_version"]:
+        author_searched = True
+        try:
+            for c in crossref_search(title, rows=10, author=surname(named[0])):
+                if not c.get("doi") or _is_preprint(c):
+                    continue                          # 沒 DOI，或本身就是預印本
+                if pre_year and (not c.get("year") or c["year"] < pre_year - 1):
+                    continue                          # 比預印本早兩年以上：不會是它的正式版
+                fits, ov, ts = _fits_preprint(c, title, named)
+                if not fits:
+                    continue
+                item = dict(c, basis="author_search", author_overlap=ov, title_sim=ts)
+                if pre_year and c["year"] < pre_year:
+                    # 期刊先發表、之後才上傳 arXiv 的情形不少：放寬一年，但標出來
+                    item["year_before_preprint"] = True
+                possible.append(item)
+        except Exception as e:
+            out.setdefault("crossref_error", str(e))
+    # 整體排序再截斷：自填 DOI 對不上的那筆不該只因為先進來就佔第一格
+    possible.sort(key=lambda c: (c.get("author_overlap") or 0.0, c.get("title_sim") or 0.0), reverse=True)
+    seen, merged = set(), []
+    for c in possible:
+        if c.get("doi") and c["doi"] not in seen:
+            seen.add(c["doi"])
+            merged.append(c)
+    if merged:
+        out["possible_published_versions"] = merged[:3]
+
+    errors = [k for k in ("crossref_error", "s2_error", "arxiv_error") if out.get(k)]
     if out["published_version"]:
         p = out["published_version"]
-        out["recommendation"] = (f"已有正式發表版({p.get('container') or p.get('type')}, "
-                                 f"{p.get('year')},DOI {p.get('doi')})，學術慣例應引正式版")
-        if not out.get("s2_record", {}).get("doi"):
+        out["recommendation"] = "已有正式發表版(%s)，學術慣例應引正式版" % _describe(p)
+        if out.get("version_link") == "input_doi_is_published":
+            out["recommendation"] = "輸入的 DOI 本身就是正式發表版(%s)，可直接引用" % _describe(p)
+        elif out.get("version_link") == "arxiv_journal_ref":
+            out["confidence_note"] = ("版本連結來自 arXiv 上作者自填的期刊 DOI，且作者與題目對得上——"
+                                      "作者自己標明的正式版，不是由標題推定")
+        elif via_s2_merge and p.get("source"):
+            out["confidence"] = "medium"
+            out["confidence_note"] = "S2 版本合併訊號給的 DOI，但 Crossref 覆核失敗：書目未經核對，引用前請自行確認"
+        elif not via_s2_merge:
             out["confidence"] = "medium"
             out["confidence_note"] = ("版本鏈由標題相似度推定(未經 S2 版本合併訊號佐證):"
                                       "同名標題的不同論文可能被誤配，請核對作者與年份後再改引")
-    elif out.get("crossref_error") or out.get("s2_error") or out.get("arxiv_error"):
+        if errors and out.get("version_link") != "input_doi_is_published":
+            # 較強的訊號沒查到（arXiv 掛了、自填 DOI 覆核失敗）而較弱的訊號找到了：結果可用，
+            # 但信心不能高於 medium，而且要說有一條路沒走完——即使信心本來就是 medium 也要說
+            out["confidence"] = "medium"
+            out["confidence_note"] = ((out.get("confidence_note") or "") +
+                                      "；另有來源查詢失敗（%s），更強的版本訊號未能核對" % "、".join(errors)).lstrip("；")
+    elif errors:
         out["recommendation"] = ("版本解析未完成——來源查詢失敗(見 *_error 欄位),"
                                  "這不代表沒有正式發表版；請稍後重試")
+        if out.get("possible_published_versions"):
+            out["recommendation"] += "；已找到的「可能的正式版」見 possible_published_versions"
         print(json.dumps(out, ensure_ascii=False, indent=1))
         sys.exit(1)
-    elif out["arxiv"]:
-        out["recommendation"] = ("Crossref 查無正式發表版(不保證不存在，會議論文集常不註冊 DOI);"
-                                 "目前引 arXiv 版合理，投稿前可再查一次")
+    elif out.get("possible_published_versions"):
+        k = len(out["possible_published_versions"])
+        out["recommendation"] = ("標題相似度沒有找到正式版，但找到 %d 筆「可能」是正式版的紀錄"
+                                 "（依據見各筆的 basis：作者自填 DOI 或作者搜尋）：請逐筆核對作者、摘要與方法，"
+                                 "確認是同一研究就改引正式版——很多期刊不接受引用 arXiv 預印本" % k)
+        out["confidence"] = "low"
+    elif confirmed and not title:
+        # 來源證實這篇存在，但沒拿到標題，什麼都沒搜。沒搜就不能寫「搜尋查無」。
+        out["recommendation"] = ("來源有這筆記錄但沒有標題可供比對，未做任何版本搜尋："
+                                 "請改用 DOI 或自行提供完整標題再查")
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        sys.exit(1)
+    elif confirmed and out["arxiv"]:
+        # 以前這裡說「目前引 arXiv 版合理」。但很多期刊不收 arXiv，而「查無正式版」只是
+        # 這次搜尋的結果：改了標題的正式版、不註冊 DOI 的會議論文都可能沒搜到。
+        how = "標題與作者搜尋都" if author_searched else "標題搜尋"
+        out["recommendation"] = ("以%s查無正式發表版（查無 ≠ 不存在：會議論文集常不註冊 DOI，"
+                                 "改了標題的正式版也可能沒搜到）。注意很多期刊不接受引用 arXiv 預印本——"
+                                 "引用前請再確認一次，例如在 Google Scholar 看這篇的「所有版本」" % how)
+        if (out.get("arxiv_record") or {}).get("journal_doi_status"):
+            out["recommendation"] += "；arXiv 上作者自填的期刊 DOI 未能採用，原因見 arxiv_record.journal_doi_status"
+    elif is_arxiv and s2_not_found and arxiv_not_found:
+        # S2 與 arXiv 都回「查無」(查詢失敗會走上面的 *_error 分支)：沒有任何來源證實這個編號
+        # 存在。以前會落到上一支、說「目前引 arXiv 版合理」，等於替一個可能打錯的編號背書。
+        # 無法判定就不回 0——與 UNSUPPORTED_IDENTIFIER 同一條原則。
+        out["error"] = "ARXIV_ID_NOT_FOUND"
+        out["recommendation"] = ("Semantic Scholar 與 arXiv API 皆查無此編號（兩者都回查無，不是查詢失敗）："
+                                 "沒有任何來源證實這篇存在，請先確認編號是否打錯；確認之前不要引用")
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        sys.exit(1)
+    elif title_searched:
+        # 標題輸入（或 DOI 輸入、Crossref 查無但 S2 給了標題）：搜過了、沒找到。不能把問題推給使用者的輸入格式。
+        out["recommendation"] = ("以標題搜尋查無正式發表版（查無 ≠ 不存在）；若這是預印本，"
+                                 "注意很多期刊不接受引用預印本，請改以 DOI 或 arXiv 編號再查一次")
     else:
         out["recommendation"] = "無法解析版本鏈，請確認輸入為 DOI:x / ARXIV:x / 完整標題"
     print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -872,8 +1093,9 @@ def looks_like_doi(ident):
     複製了一份等價的 lambda 然後測那份 lambda——那種測試對生產程式碼的任何改動
     都不會變紅,它證明的只是它自己抄對了。
     """
-    ident = (ident or "").strip()
-    return bool(ident.upper().startswith("DOI:") or re.match(r"^10\.\d{4,9}/", ident))
+    # 先把「doi:」與「https://doi.org/」前綴清掉再認：使用者貼的常常就是網址，以前這種輸入
+    # 不被認成 DOI，整串網址被當成標題去搜，最後落到「請確認輸入為 DOI:x」——把問題推給使用者。
+    return bool(re.match(r"^10\.\d{4,9}/\S+", _clean_doi(ident)))
 
 
 def norm_title(t):
@@ -915,23 +1137,91 @@ def title_sim(a, b):
     return round(min(char_ratio, token_ratio), 3)
 
 
+_ALWAYS_SUFFIXES = {"jr", "sr"}
+_ROMAN_SUFFIXES = {"ii", "iii", "iv"}
+
+
+def _name_key(name):
+    """作者名字 → (姓氏詞組, 名字詞組, 姓氏是否確定)；沒有鑑別力時回 None。
+
+    「Family, Given」（有逗號）的姓氏是確定的：逗號前整段。「Given Family」（沒有逗號）分不出
+    哪幾個詞是姓——「María García López」的姓是「García López」，不是「López」——所以只回傳
+    整串詞、標成不確定，由比對端決定怎麼用。以前不分青紅皂白把兩種寫法都砍成最後一個詞，
+    「García López」與「Pérez López」（不同人）就成了同一個姓。
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    known = "," in name
+    fam_s, given_s = name.split(",", 1) if known else (name, "")
+    fam = [t for t in re.findall(r"[^\s,.]+", fam_s.lower()) if t not in _ALWAYS_SUFFIXES]
+    given = [t for t in re.findall(r"[^\s,.]+", given_s.lower()) if t not in _ALWAYS_SUFFIXES]
+    # 羅馬數字後綴（II、III、IV）只有在去掉之後還剩兩個詞以上才當後綴：日本姓「Ii」（伊井）
+    # 是真的姓，「Naosuke Ii」去掉它就只剩名字了。
+    for part in (fam, given):
+        if part and part[-1] in _ROMAN_SUFFIXES and len(fam) + len(given) - 1 >= 2:
+            part.pop()
+    if not fam:
+        return None
+    if len(fam) == 1 and len(fam[0]) <= 1:
+        return None          # 只剩一個字母（「J.」）沒有鑑別力：拿它比對只會讓不同人互相認證
+    return fam, given, known
+
+
+def surname(name):
+    """作者姓氏的**查詢詞**（送進 Crossref query.author 用）：姓氏詞組的最後一個詞。
+    比對兩個名字是不是同一個姓，請用 same_surname，不要拿這個值互相比。"""
+    k = _name_key(name)
+    return k[0][-1] if k else ""
+
+
+def same_surname(a, b):
+    """兩個作者名字的姓氏是否相同。
+
+    兩邊都有逗號：姓氏詞組要完全相同——「García López」≠「Pérez López」。
+    一邊有、一邊沒有：有逗號那邊的姓氏詞組要是另一邊的結尾——「van der Linden, Daan」對
+    「Daan van der Linden」、「García López, María」對「María García López」都成立，
+    「García López, María」對「Juan Pérez López」不成立。
+    兩邊都沒有逗號：分不出姓的範圍，只能比最後一個詞（與以前相同）。
+    """
+    ka, kb = _name_key(a), _name_key(b)
+    if ka is None or kb is None:
+        return False
+    (fa, _ga, known_a), (fb, _gb, known_b) = ka, kb
+    if known_a and known_b:
+        return fa == fb
+    if known_a != known_b:
+        short, full = (fa, fb) if known_a else (fb, fa)
+        return len(short) <= len(full) and full[-len(short):] == short
+    return fa[-1] == fb[-1]
+
+
+def same_person(a, b):
+    """同姓之外，名字首字母也對得上（兩邊都有名字時才比）。用在「這是不是同一個人」的判斷，
+    例如書評防護：第一作者與使用者的作者同姓但名字不同，就是另一個人。"""
+    if not same_surname(a, b):
+        return False
+    ka, kb = _name_key(a), _name_key(b)
+    ga = ka[1] if ka[2] else ka[0][:-1]
+    gb = kb[1] if kb[2] else kb[0][:-1]
+    if ga and gb:
+        return ga[0][0] == gb[0][0]
+    return True
+
+
 def author_overlap(query_authors, cand_authors):
-    """姓氏比對：query 作者中有幾成出現在候選作者裡。"""
+    """姓氏比對：query 作者中有幾成，在候選作者裡找得到同姓的人（見 same_surname）。
+
+    query 這一側沒有任何可比對的名字（空白、只剩首字母）就回 None——不知道，不是零。
+    """
     if not query_authors or not cand_authors:
         return None
-    def last_names(names):
-        out = set()
-        for n in names:
-            n = (n or "").strip()
-            if not n:
-                continue
-            ln = n.split(",")[0].strip() if "," in n else n.split()[-1]
-            out.add(ln.lower())
-        return out
-    q, c = last_names(query_authors), last_names(cand_authors)
-    if not q:
+    qs = [a for a in query_authors if _name_key(a)]
+    if not qs:
         return None
-    return round(len(q & c) / len(q), 2)
+    cs = [c for c in cand_authors if _name_key(c)]
+    hit = sum(1 for q in qs if any(same_surname(q, c) for c in cs))
+    return round(hit / len(qs), 2)
 
 
 def score_candidate(cand, title, authors, year):
@@ -1001,14 +1291,12 @@ def derivative_signals(c, query_authors=None):
     # 書評的作者欄常同時含書評人與原著作者：使用者給的作者有中，但候選第一位不是他
     if query_authors and (c.get("authors") or []):
         first = (c["authors"][0] or "")
-        qs = {a.split(",")[0].strip().lower() if "," in a else a.split()[-1].lower()
-              for a in query_authors if a and a.strip()}
-        # 比對必須是「詞相等」而不是「子字串包含」。用 `q in first.lower()` 時,
-        # 使用者姓 Li 而第一作者叫 Elizabeth Wallis,'li' 出現在 'elizabeth' 裡面,
-        # 於是條件不成立、整條書評防護自己關掉——姓氏越短越容易關掉,而短姓氏
-        # (Li、Wu、Xu、Ng)正是最常見的一批。
-        first_tokens = {w for w in re.split(r"[^\w]+", first.lower()) if w}
-        if qs and not (qs & first_tokens) and author_overlap(list(query_authors), c["authors"]) == 1.0:
+        named = [a for a in query_authors if _name_key(a)]
+        # 「第一作者是不是使用者的作者」問的是同一個人：同姓之外名字首字母也要對得上。
+        # 以前先用子字串包含（'li' 在 'elizabeth wallis' 裡，防護自己關掉），後來改成詞集合
+        # 交集——但詞集合連名字都算進去，而書評人只要跟原著作者共用姓的最後一個詞，防護照樣
+        # 失效，書評就被蓋章成原著。
+        if named and not any(same_person(a, first) for a in named) and author_overlap(list(query_authors), c["authors"]) == 1.0:
             out.append(f"使用者提供的作者出現在候選中，但第一作者是他人（{first}）"
                        "——書評／評論條目的典型樣態")
     return out

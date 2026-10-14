@@ -133,8 +133,8 @@ email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給�
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 75 個凍結案例，不打網路，秒級跑完
-python evals/mutation_check.py      # 把 9 個已修的 bug 塞回去，每個都必須被抓到
+python evals/test_regression.py     # 113 個凍結案例，不打網路，秒級跑完
+python evals/mutation_check.py      # 把 44 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
 `test_regression.py` 把每個找到過的缺陷凍成案例，每個案例都標了出處(`TS-*` 黑箱壓力測試、`CX-*` Codex 獨立原始碼審查、`DR-*` 設計 review)。它直接呼叫生產程式碼並餵凍結候選資料，所以不需要 API、秒級完成。

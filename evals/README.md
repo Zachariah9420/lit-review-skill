@@ -3,8 +3,8 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 75 frozen cases
-python evals/mutation_check.py      # 9 mutations; each must be caught
+python evals/test_regression.py     # 113 frozen cases
+python evals/mutation_check.py      # 44 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
 
@@ -18,8 +18,18 @@ Every case corresponds to a defect that actually occurred. The id prefix records
 | `CX-*` | independent source review by an unrelated model (24 findings) |
 | `DR-*` | design review of the matching logic |
 | `REG-*` | guards normal behaviour against over-correction |
+| `XF-*` | fresh-session cross-domain testing: journal book reviews, letters and editorials that copy the original title and get "corrected" into the user's citation (XF-01–03); two earlier fixes that were too narrow, each leaving a sibling unfixed (XF-04/05) |
+| `MED-*` | fresh-session medical-literature testing: candidates with an empty author field slipped past the author gate (MED-01–04); a single surviving source was not flagged as weaker evidence (MED-05/06) |
+| `PH-*` | fresh-session pharmacy testing: Vancouver-style numbered reference lists parsed as zero entries (PH-01–03); pre-2010 retractions with no Crossref `updates` link (PH-04–06) |
+| `NS-*` | fresh-session testing: the same paper from Crossref and S2 misread as an ambiguous match (NS-01–03); HTML entities such as `&amp;` leaking from Crossref into exports (NS-04) |
+| `PERF-*` | see case docstrings (covers rate-limiter behaviour under concurrency, and `verify` / `verify-batch` sharing one decision path) |
+| `FT-*` | see case docstrings (covers the `fulltext` boundary: no paywall circumvention, an institutional route when no free copy exists, source disagreements stated) |
+| `PUNCT-*` | see case docstrings (covers full-width punctuation in the Chinese output strings of `lit_api.py` and `cite_integrity.py`) |
+| `NET-*` | the suite's own no-network gate (`NET-01`); added after MED-05/06 turned out to be really connecting to Semantic Scholar |
 
 It calls the production functions (`rank_candidates`, `decide_verdict`, `norm_title`, …) with frozen candidate data, plus the CLIs against fixture files. No API keys, no network, no flakiness.
+
+"No network" is enforced by the suite itself: it blocks socket connections in-process and fails case `NET-01` if anything tries to connect (CLI subprocesses started by `run_cli` are outside that block). `-k` now only selects which suites run; it no longer hides failing results.
 
 ## mutation_check.py
 

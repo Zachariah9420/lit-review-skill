@@ -470,18 +470,32 @@ def test_single_source_degradation():
     def boom(*a, **k):
         raise OSError("模擬 Crossref 連線失敗")
 
+    # 這裡以前替換的是 la.s2_match／la.s2_search——但 verify_one 的 fetch_s2 不走那兩個，
+    # 它直接呼叫 http_get 打 S2 的 /paper/search/match。所以這兩條測試一直是真的連到
+    # Semantic Scholar、拿到真的 Attention Is All You Need 才過的：遇到 429 就隨機變紅，
+    # 而上面的註解還寫著「不連網」（2026-10-14 封網重跑時只有這兩條紅，才抓到）。
+    # 替換要做在真正的出口 http_get。外洩的網址另外記下來檢查：假物件在供應者執行緒裡
+    # 丟的例外會被 verify_one 收成「來源查詢失敗」，光靠丟例外，外洩反而會被藏起來。
+    s2_match_payload = json.dumps({"data": [{
+        "paperId": "fixture", "title": "Attention Is All You Need", "year": 2017,
+        "authors": [{"name": "Ashish Vaswani"}], "venue": "NIPS",
+        "externalIds": {"DOI": "10.5555/3295222"}}]})
+    leaked = []
+
+    def fake_http_get(url, *a, **k):
+        if "api.semanticscholar.org" in url and "/paper/search/match" in url:
+            return s2_match_payload
+        leaked.append(url)
+        raise OSError("測試替身拒絕連網：%s" % url)
+
     la.crossref_search = boom
-    la.s2_match = lambda *a, **k: [{
-        "title": "Attention Is All You Need", "year": 2017,
-        "authors": ["Ashish Vaswani"], "doi": "10.5555/3295222",
-        "source": "s2", "venue": "NIPS"}]
-    la.s2_search = lambda *a, **k: []
+    la.http_get = fake_http_get
     r = la.verify_one("Attention Is All You Need",
                       authors=["Vaswani, Ashish"], year=2017)
     basis = r.get("identity_basis") or {}
-    check("MED-05", "單源退化時輸出 single_source_degraded 說明",
-          "證據強度低於雙源交叉" in (r.get("single_source_degraded") or ""),
-          f"single_source_degraded={r.get('single_source_degraded')!r}")
+    check("MED-05", "單源退化時輸出 single_source_degraded 說明（且全程不連網）",
+          "證據強度低於雙源交叉" in (r.get("single_source_degraded") or "") and not leaked,
+          f"single_source_degraded={r.get('single_source_degraded')!r} leaked={leaked!r}")
     check("MED-06", "單源退化時信心不得留在 high，且標出退化來源",
           basis.get("identity_confidence") != "high" and basis.get("sources_degraded"),
           f"confidence={basis.get('identity_confidence')!r} "
@@ -646,6 +660,688 @@ def test_output_hardening():
         os.unlink(path)
 
 
+def test_versions_s2_absent():
+    """CX-18（2026-10-13 唯讀 agent 實測 `versions ARXIV:2608.28300`）：S2 尚未收錄該 arXiv
+    編號時整支崩潰。路徑：S2 回 404 → 被記成 s2_error、s2_record 留在 None → arXiv API 補到
+    標題 → Crossref 標題搜尋找到候選正式版 → 走到「S2 記錄無 DOI 就把信心降為 medium」那行，
+    對 None 呼叫 .get() → AttributeError。這裡用假物件驅動同一條路徑，呼叫的是生產的
+    cmd_versions。不連網：http_get 被換成會直接失敗的假物件，任何漏網的網路出口都會現形。"""
+    import contextlib
+    import io
+    import types
+    import urllib.error
+    spec = importlib.util.spec_from_file_location(
+        "la_ver", os.path.join(SKILL, "scripts", "lit_api.py"))
+    la_ver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(la_ver)
+
+    title = "MaCoPlanner: LLM-Assisted Manual-Compiled Task Planning for Robotic Panel Operation"
+    # 真實崩潰案例裡 Crossref 找到的是一筆 SSRN（posted-content）——那其實也是預印本，
+    # 2026-10-14 起不再被當成正式版（見 CX-18h）。這裡改用一筆期刊論文當候選，讓本函式繼續
+    # 驅動它存在的理由：s2_record 為 None 時走到「找到正式版」那一支不能崩潰。
+    pub = {"source": "crossref", "title": title, "year": 2026, "doi": "10.1000/macoplanner.2026",
+           "type": "journal-article", "container": "Robotics and Autonomous Systems",
+           "authors": ["Xin, Guipeng"]}
+
+    def s2_404(pid):
+        raise urllib.error.HTTPError("https://api.semanticscholar.org/graph/v1/paper/" + pid,
+                                     404, "Not Found", {}, None)
+
+    def no_network(*a, **k):
+        raise AssertionError("測試不得連網：http_get 被呼叫 %r" % (a[:1],))
+
+    def run(ident, crossref_hits):
+        la_ver.http_get = no_network
+        la_ver.s2_get_paper = s2_404
+        la_ver.arxiv_query = lambda *a, **k: [{"title": title, "year": 2026}]
+        la_ver.crossref_search = lambda *a, **k: list(crossref_hits)
+        buf, code, exc = io.StringIO(), 0, None
+        try:
+            with contextlib.redirect_stdout(buf):
+                la_ver.cmd_versions(types.SimpleNamespace(id=ident))
+        except SystemExit as e:
+            code = e.code
+        except Exception as e:
+            exc = f"{type(e).__name__}: {e}"
+        out = buf.getvalue()
+        return code, exc, (json.loads(out) if out.strip().startswith("{") else {})
+
+    # 崩潰當時的實際情境：S2 無記錄，但 arXiv 標題經 Crossref 找到候選正式版
+    code, exc, d = run("ARXIV:2608.28300", [pub])
+    check("CX-18", "versions 在 S2 查無 arXiv 記錄時不崩潰：仍回報 Crossref 找到的版本、信心 medium、附 S2 缺漏原因、exit 0",
+          exc is None and code == 0 and d.get("s2_record") is None
+          and d.get("published_version") and d.get("confidence") == "medium"
+          and "查無" in (d.get("s2_note") or "") and not d.get("s2_error"),
+          f"exc={exc} exit={code} s2_note={d.get('s2_note')!r} s2_error={d.get('s2_error')!r} "
+          f"confidence={d.get('confidence')!r}")
+
+    # 同一缺口的另一半：S2 無記錄且 Crossref 也沒有候選——「查無記錄」不是「查詢失敗」，
+    # 不得走「請稍後重試」並回非零；要給可行動的建議並 exit 0
+    code, exc, d = run("ARXIV:2608.28300", [])
+    check("CX-18b", "S2 查無記錄且無正式版候選時，回 arXiv 版建議而非「查詢失敗請重試」，exit 0",
+          exc is None and code == 0 and d.get("published_version") is None
+          and "查無" in (d.get("s2_note") or "") and not d.get("s2_error")
+          # 原本只檢查建議裡有「arXiv」：ARXIV_ID_NOT_FOUND 的訊息也含這個字，擋不住誤判
+          and "查無正式發表版" in (d.get("recommendation") or ""),
+          f"exc={exc} exit={code} recommendation={d.get('recommendation')!r}")
+
+    # 直接給標題的路徑（else 分支）從頭到尾不會設 s2_record，它恆為 None：只要 Crossref
+    # 找到候選就走到同一行——不是偶發，是每次必崩（另一個 session 離線重現後指出）
+    code, exc, d = run(title, [pub])
+    check("CX-18c", "versions 直接給標題且 Crossref 找到候選時不崩潰（s2_record 恆為 None 的路徑）",
+          exc is None and code == 0 and d.get("s2_record") is None
+          and d.get("published_version") and d.get("confidence") == "medium",
+          f"exc={exc} exit={code} confidence={d.get('confidence')!r}")
+
+def test_versions_published_lookup():
+    """CX-18d～g（2026-10-14：獨立驗證 CX-18 修正時發現 d，使用者回饋引出 e/f/g）。
+    d：編號根本不存在（S2 與 arXiv 都回查無）——CX-18 修正後會落到「引 arXiv 版合理」並回 0，
+       等於替打錯的編號背書。要 error=ARXIV_ID_NOT_FOUND、非零。
+    e：正式版改了標題——標題相似度 ≥ 0.93 找不到，要靠作者找；只列為「可能」，不自動改引。
+       三個誘餌各被一個條件擋掉（年份更早、作者不同、題目無關），每個篩選條件都測到。
+    f：作者在 arXiv 自填的期刊 DOI——最直接的版本連結，以前抓了卻沒用。
+    g：查無正式版時不得再說「引 arXiv 版合理」——很多期刊不收 arXiv 預印本。
+    不連網：http_get 只回應明確列出的 Crossref /works/<doi>，其餘一律記成外洩並讓案例失敗。"""
+    import contextlib
+    import io
+    import types
+    import urllib.error
+    spec = importlib.util.spec_from_file_location(
+        "la_pub", os.path.join(SKILL, "scripts", "lit_api.py"))
+    la_p = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(la_p)
+
+    pre_title = "Neural Widget Alignment: A Contrastive Approach to Cross-Domain Widget Matching"
+    pre = {"title": pre_title, "year": 2024, "doi": None,
+           "authors": ["Alice Chen", "Bob Okafor", "Carla Diaz"]}
+    same_authors = ["Chen, Alice", "Okafor, Bob", "Diaz, Carla"]
+    renamed = {"source": "crossref", "title": "Contrastive Cross-Domain Matching of Neural Widgets",
+               "year": 2025, "doi": "10.1000/widget.2025.7", "type": "journal-article",
+               "container": "Journal of Widget Research", "authors": same_authors}
+    earlier = dict(renamed, title="Neural Widget Alignment Preliminary Notes",
+                   year=2022, doi="10.1000/widget.2022.1")
+    stranger = dict(renamed, doi="10.1000/other.2025.3", authors=["Smith, Dana", "Lee, Evan"])
+    unrelated = dict(renamed, title="Soil Moisture Sensing in Arid Vineyards",
+                     doi="10.1000/soil.2025.9")
+
+    def s2_404(pid):
+        raise urllib.error.HTTPError("https://api.semanticscholar.org/graph/v1/paper/" + pid,
+                                     404, "Not Found", {}, None)
+
+    def run(arxiv_entries, by_title, by_author, works=None):
+        works, leaked = works or {}, []
+
+        def fake_http_get(url, *a, **k):
+            for doi, msg in works.items():
+                if url.endswith("/works/" + doi):
+                    return json.dumps({"message": msg})
+            leaked.append(url)
+            raise AssertionError("測試不得連網：http_get 被呼叫 %r" % (url,))
+
+        la_p.http_get = fake_http_get
+        la_p.s2_get_paper = s2_404
+        la_p.arxiv_query = lambda *a, **k: [dict(e) for e in arxiv_entries]
+        la_p.crossref_search = lambda t, rows=5, author=None: [
+            dict(c) for c in (by_author if author else by_title)]
+        buf, code, exc = io.StringIO(), 0, None
+        try:
+            with contextlib.redirect_stdout(buf):
+                la_p.cmd_versions(types.SimpleNamespace(id="ARXIV:2410.01234"))
+        except SystemExit as e:
+            code = e.code
+        except Exception as e:
+            exc = f"{type(e).__name__}: {e}"
+        out = buf.getvalue()
+        d = json.loads(out) if out.strip().startswith("{") else {}
+        return code, (exc or ("leaked=%r" % leaked if leaked else None)), d
+
+    code, exc, d = run([], [], [])
+    check("CX-18d", "編號在 S2 與 arXiv 都查無時回 ARXIV_ID_NOT_FOUND 並非零，不背書引用",
+          exc is None and code == 1 and d.get("error") == "ARXIV_ID_NOT_FOUND"
+          and "合理" not in (d.get("recommendation") or ""),
+          f"exc={exc} exit={code} error={d.get('error')!r} rec={d.get('recommendation')!r}")
+
+    code, exc, d = run([pre], [], [renamed, earlier, stranger, unrelated])
+    found = [c.get("doi") for c in d.get("possible_published_versions") or []]
+    check("CX-18e", "正式版改了標題時以作者找到它，只列為「可能」、信心 low，三個誘餌全被擋掉",
+          exc is None and code == 0 and d.get("published_version") is None
+          and found == ["10.1000/widget.2025.7"] and d.get("confidence") == "low"
+          and "核對" in (d.get("recommendation") or ""),
+          f"exc={exc} exit={code} found={found} confidence={d.get('confidence')!r}")
+
+    works = {"10.1000/widget.2025.7": {
+        "title": ["Contrastive Cross-Domain Matching of Neural Widgets"],
+        "DOI": "10.1000/widget.2025.7", "type": "journal-article",
+        "container-title": ["Journal of Widget Research"],
+        "issued": {"date-parts": [[2025]]},
+        # 正式版列出全部三位作者：只列一位的話作者重疊只有 0.33，作者自填 DOI 的合理性
+        # 檢查（作者至少一半對得上）會正確地把它降成「可能」——真實的正式版不會這樣。
+        "author": [{"family": "Chen", "given": "Alice"}, {"family": "Okafor", "given": "Bob"},
+                   {"family": "Diaz", "given": "Carla"}]}}
+    code, exc, d = run([dict(pre, doi="10.1000/widget.2025.7")], [], [], works)
+    pv = d.get("published_version") or {}
+    check("CX-18f", "arXiv 上作者自填的期刊 DOI 直接當成正式版，且不被降成「由標題推定」",
+          exc is None and code == 0 and pv.get("doi") == "10.1000/widget.2025.7"
+          and d.get("version_link") == "arxiv_journal_ref"
+          and d.get("confidence") != "medium" and "作者自填" in (d.get("confidence_note") or ""),
+          f"exc={exc} exit={code} pv={pv.get('doi')!r} link={d.get('version_link')!r} "
+          f"confidence={d.get('confidence')!r}")
+
+    code, exc, d = run([pre], [], [])
+    rec = d.get("recommendation") or ""
+    check("CX-18g", "查無正式版時不說「引 arXiv 版合理」，改提醒很多期刊不收 arXiv",
+          exc is None and code == 0 and "合理" not in rec and "不接受" in rec
+          and "標題與作者" in rec,
+          f"exc={exc} exit={code} rec={rec!r}")
+
+
+def test_versions_review_fixes():
+    """CX-18h～u（2026-10-14：兩位反駁者審查 CX-18d～g 的修正時實測到的缺陷與存活突變，逐一凍結）。
+    h：Crossref 的 posted-content（SSRN 等預印本伺服器）被當成「正式版」建議改引；arXiv 自己的
+       DOI 不得被當成作者自填的期刊 DOI。
+    i：DOI 輸入、Crossref 查無但 S2 有這篇——不得說成兩邊都查無（存在性改用明確旗標）。
+    j：S2 有記錄但還沒合併正式版時（最常見），也要讀 arXiv 上作者自填的期刊 DOI；網址前綴要清掉。
+    k：作者自填的 DOI 在 Crossref 查無——不得推薦改引，並說明原因。
+    l：作者自填的 DOI 指向作者、題目都對不上的紀錄——只列為「可能」。
+    m：姓氏帶 van der／de 的兩種寫法要對得上；期刊早預印本一年仍要找得到，並標出來。
+    n：作者欄全空時沒有真的做作者搜尋，建議文字不得寫「標題與作者搜尋都」。
+    o：S2 的 DOI 只是 arXiv 自己的 DOI 時，由標題推定的正式版信心要降為 medium；已找到正式版
+       就不再做作者搜尋。
+    p：只有一位作者時題目門檻拉高，同姓但題目只部分相近的要被擋掉。
+    q：DOI 路徑 Crossref 逾時（非 HTTP 錯誤）不得直接拋例外當掉。
+    r：作者搜尋真的把作者姓氏送進 Crossref 的 query.author（這一案讓真的 crossref_search 跑）。
+    s：作者搜尋的每個篩選在邊界上：同年要收、2/3 作者要收、1/3 要擋、缺 DOI／缺年份／缺作者／
+       arXiv DOI／預印本伺服器／題目不相干都要擋；擋錯的話它們會排到前面，看得見。
+    t：超過三筆時依（作者重疊、題目相似）由高到低排序並截到三筆。
+    u：作者搜尋本身失敗時不得吞掉：記成查詢失敗、回非零。
+    不連網：http_get 只回應明確列出的 Crossref 端點，其餘一律記成外洩並讓案例失敗。"""
+    import contextlib
+    import io
+    import types
+    import urllib.error
+    import urllib.parse
+    spec = importlib.util.spec_from_file_location(
+        "la_rev", os.path.join(SKILL, "scripts", "lit_api.py"))
+    la_r = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(la_r)
+    real_crossref_search = la_r.crossref_search
+
+    def http_err(url, code):
+        return urllib.error.HTTPError(url, code, "fixture", {}, None)
+
+    def run(ident, s2=None, arxiv=(), by_title=(), by_author=(), works=None,
+            crossref_down=False, search=None):
+        """search 給值時不替換 crossref_search，改由假 http_get 回 Crossref 搜尋結果：
+        {"title": [原始 item…], "author": [原始 item…]}。"""
+        works, leaked, urls = works or {}, [], []
+
+        def fake_http_get(url, *a, **k):
+            urls.append(url)
+            if "api.crossref.org/works?" in url and search is not None:
+                items = search["author"] if "query.author=" in url else search["title"]
+                return json.dumps({"message": {"items": items}})
+            if "api.crossref.org/works/" in url:
+                if crossref_down:
+                    raise urllib.error.URLError("模擬 Crossref 逾時")
+                for doi, msg in works.items():
+                    if url.endswith("/works/" + doi):
+                        if msg == 404:
+                            raise http_err(url, 404)
+                        return json.dumps({"message": msg})
+                raise http_err(url, 404)
+            leaked.append(url)
+            raise AssertionError("測試不得連網：http_get 被呼叫 %r" % (url,))
+
+        def fake_s2(pid):
+            if s2 is None:
+                raise http_err("https://api.semanticscholar.org/graph/v1/paper/" + pid, 404)
+            return dict(s2)
+
+        def fake_search(t, rows=5, author=None):
+            src = by_author if author else by_title
+            if isinstance(src, Exception):
+                raise src
+            return [dict(c) for c in src]
+
+        la_r.http_get = fake_http_get
+        la_r.s2_get_paper = fake_s2
+        la_r.arxiv_query = lambda *a, **k: [dict(e) for e in arxiv]
+        la_r.crossref_search = real_crossref_search if search is not None else fake_search
+        buf, code, exc = io.StringIO(), 0, None
+        try:
+            with contextlib.redirect_stdout(buf):
+                la_r.cmd_versions(types.SimpleNamespace(id=ident))
+        except SystemExit as e:
+            code = e.code
+        except Exception as e:
+            exc = f"{type(e).__name__}: {e}"
+        out = buf.getvalue()
+        d = json.loads(out) if out.strip().startswith("{") else {}
+        return code, (exc or ("leaked=%r" % leaked if leaked else None)), d, urls
+
+    w_title = "Neural Widget Alignment: A Contrastive Approach to Cross-Domain Widget Matching"
+    renamed_t = "Contrastive Cross-Domain Matching of Neural Widgets"
+    w_authors = ["Alice Chen", "Bob Okafor", "Carla Diaz"]
+    cr3 = ["Chen, Alice", "Okafor, Bob", "Diaz, Carla"]
+    w_pre = {"title": w_title, "year": 2024, "authors": w_authors, "doi": None}
+    w_s2 = {"title": w_title, "year": 2024, "authors": w_authors, "doi": None, "arxiv": "2410.01234"}
+    w_msg = {"title": [renamed_t], "DOI": "10.1000/widget.2025.7", "type": "journal-article",
+             "container-title": ["Journal of Widget Research"], "issued": {"date-parts": [[2025]]},
+             "author": [{"family": "Chen", "given": "Alice"}, {"family": "Okafor", "given": "Bob"},
+                        {"family": "Diaz", "given": "Carla"}]}
+
+    def cand(doi, title=renamed_t, year=2025, authors=cr3, type_="journal-article"):
+        return {"source": "crossref", "title": title, "year": year, "doi": doi,
+                "type": type_, "container": "Journal of Widget Research", "authors": list(authors)}
+
+    # h
+    ssrn = cand("10.2139/ssrn.1234567", title=w_title, year=2024, type_="posted-content")
+    code, exc, d, _ = run("ARXIV:2410.01234",
+                          arxiv=[dict(w_pre, doi="10.48550/arXiv.2410.01234")],
+                          by_title=[ssrn], by_author=[ssrn])
+    rec = d.get("recommendation") or ""
+    check("CX-18h", "SSRN 等 posted-content 是預印本，不得當成正式版；arXiv 自己的 DOI 不是期刊 DOI",
+          exc is None and code == 0 and d.get("published_version") is None
+          and not d.get("possible_published_versions") and "已有正式發表版" not in rec
+          and "查無正式發表版" in rec and "journal_doi" not in (d.get("arxiv_record") or {}),
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r} "
+          f"arxiv_record={d.get('arxiv_record')!r}")
+
+    # i
+    code, exc, d, _ = run("DOI:10.48550/arXiv.2410.01234",
+                          s2=dict(w_s2, doi="10.48550/arXiv.2410.01234"))
+    rec = d.get("recommendation") or ""
+    check("CX-18i", "DOI 輸入、Crossref 查無但 S2 有這篇時，不得說成兩邊都查無；作者仍取自 S2",
+          exc is None and code == 0 and d.get("error") != "ARXIV_ID_NOT_FOUND"
+          and "查無正式發表版" in rec and "標題與作者" in rec,
+          f"exc={exc} exit={code} error={d.get('error')!r} rec={rec[:40]!r}")
+
+    # j
+    code, exc, d, _ = run("ARXIV:2410.01234", s2=w_s2,
+                          arxiv=[dict(w_pre, doi="https://doi.org/10.1000/widget.2025.7")],
+                          works={"10.1000/widget.2025.7": w_msg})
+    pv = d.get("published_version") or {}
+    check("CX-18j", "S2 有記錄但未合併正式版時，仍讀 arXiv 上作者自填的期刊 DOI（網址前綴要清掉）",
+          exc is None and code == 0 and pv.get("doi") == "10.1000/widget.2025.7"
+          and d.get("version_link") == "arxiv_journal_ref"
+          and (d.get("arxiv_record") or {}).get("journal_doi") == "10.1000/widget.2025.7",
+          f"exc={exc} exit={code} pv={pv.get('doi')!r} link={d.get('version_link')!r}")
+
+    # k
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[dict(w_pre, doi="10.1000/missing.1")],
+                          works={"10.1000/missing.1": 404})
+    status = (d.get("arxiv_record") or {}).get("journal_doi_status") or ""
+    check("CX-18k", "作者自填的 DOI 在 Crossref 查無時不得推薦改引，並在建議裡說明原因",
+          exc is None and code == 0 and d.get("published_version") is None
+          and "查無此 DOI" in status and "journal_doi_status" in (d.get("recommendation") or ""),
+          f"exc={exc} exit={code} status={status!r}")
+
+    # l
+    soil_msg = {"title": ["Soil Moisture Sensing in Arid Vineyards"], "DOI": "10.1000/soil.1",
+                "type": "journal-article", "container-title": ["Vineyard Science"],
+                "issued": {"date-parts": [[2025]]}, "author": [{"family": "Nobody", "given": "Z"}]}
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[dict(w_pre, doi="10.1000/soil.1")],
+                          works={"10.1000/soil.1": soil_msg})
+    poss = d.get("possible_published_versions") or []
+    check("CX-18l", "作者自填的 DOI 指向作者與題目都對不上的紀錄時，只列為「可能」，不推薦改引",
+          exc is None and code == 0 and d.get("published_version") is None
+          and [p.get("basis") for p in poss] == ["arxiv_declared_doi_mismatch"]
+          and d.get("confidence") == "low",
+          f"exc={exc} exit={code} poss={[(p.get('doi'), p.get('basis')) for p in poss]}")
+
+    # m
+    t_pre = {"title": "Learning Robust Tulip Detectors from Sparse Field Images", "year": 2024,
+             "authors": ["Daan van der Linden", "Eva de Wit"], "doi": None}
+    t_pub = cand("10.1000/tulip.2023.4", title="Robust Tulip Detection from Sparse Field Imagery",
+                 year=2023, authors=["van der Linden, Daan", "de Wit, Eva"])
+    code, exc, d, _ = run("ARXIV:2410.07777", arxiv=[t_pre], by_author=[t_pub])
+    poss = d.get("possible_published_versions") or []
+    flagged = bool(poss) and poss[0].get("year_before_preprint") is True
+    check("CX-18m", "姓氏帶 van der／de 的兩種寫法對得上；期刊早預印本一年仍找得到並標出",
+          exc is None and code == 0 and [p.get("doi") for p in poss] == ["10.1000/tulip.2023.4"]
+          and flagged,
+          f"exc={exc} exit={code} poss={[(p.get('doi'), p.get('year_before_preprint')) for p in poss]}")
+
+    # n
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[dict(w_pre, authors=["", "  "])],
+                          by_author=[cand("10.1000/should.not.search")])
+    rec = d.get("recommendation") or ""
+    check("CX-18n", "作者欄全空時沒有真的做作者搜尋，建議文字不得寫成「標題與作者搜尋都」",
+          exc is None and code == 0 and "以標題搜尋查無" in rec and "標題與作者" not in rec,
+          f"exc={exc} exit={code} rec={rec[:30]!r}")
+
+    # o
+    same = cand("10.1000/widget.same", title=w_title)
+    code, exc, d, _ = run("ARXIV:2410.01234", s2=dict(w_s2, doi="10.48550/arXiv.2410.01234"),
+                          arxiv=[w_pre], by_title=[same],
+                          by_author=[cand("10.1000/should.not.search")])
+    check("CX-18o", "S2 的 DOI 只是 arXiv 自己的 DOI 時，由標題推定的正式版信心降為 medium；不再多做作者搜尋",
+          exc is None and code == 0
+          and (d.get("published_version") or {}).get("doi") == "10.1000/widget.same"
+          and d.get("confidence") == "medium" and not d.get("possible_published_versions"),
+          f"exc={exc} exit={code} confidence={d.get('confidence')!r} "
+          f"poss={[p.get('doi') for p in d.get('possible_published_versions') or []]}")
+
+    # p
+    s_pre = {"title": "Deep Learning for Image Classification", "year": 2024,
+             "authors": ["Wei Wang"], "doi": None}
+    s_decoy = cand("10.1000/dl.decoy", title="Image Classification with Deep Learning",
+                   authors=["Wang, Wei"])
+    s_real = cand("10.1000/dl.real", title="Deep Learning Models for Image Classification Tasks",
+                  authors=["Wang, Wei"])
+    code, exc, d, _ = run("ARXIV:2410.08888", arxiv=[s_pre], by_author=[s_decoy, s_real])
+    found = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-18p", "只有一位作者時題目門檻拉高（0.5），同姓但題目只部分相近（0.40）的要被擋掉",
+          exc is None and code == 0 and found == ["10.1000/dl.real"],
+          f"exc={exc} exit={code} found={found}")
+
+    # q
+    code, exc, d, _ = run("DOI:10.1000/some.paper", crossref_down=True)
+    check("CX-18q", "DOI 路徑 Crossref 逾時不得直接拋例外當掉：記成查詢失敗並回非零",
+          exc is None and code == 1 and d.get("crossref_error"),
+          f"exc={exc} exit={code} crossref_error={d.get('crossref_error')!r}")
+
+    # r
+    raw_renamed = dict(w_msg)
+    code, exc, d, urls = run("ARXIV:2410.01234", s2=w_s2, arxiv=[w_pre],
+                             search={"title": [], "author": [raw_renamed]})
+    author_urls = [u for u in urls if "query.author=" in u]
+    sent = [urllib.parse.parse_qs(urllib.parse.urlparse(u).query).get("query.author") for u in author_urls]
+    check("CX-18r", "作者搜尋真的把第一作者姓氏送進 Crossref 的 query.author（S2 命中的路徑）",
+          exc is None and code == 0 and sent == [["chen"]]
+          and [p.get("doi") for p in d.get("possible_published_versions") or []] == ["10.1000/widget.2025.7"],
+          f"exc={exc} exit={code} sent={sent}")
+
+    # s
+    keep_same = cand("10.1000/s.same", year=2024)
+    keep_two = cand("10.1000/s.two", authors=["Chen, Alice", "Okafor, Bob"])
+    decoys = [cand("10.1000/s.partial", title=w_title, authors=["Chen, Alice"]),
+              cand(None, title=w_title),
+              cand("10.48550/arXiv.2501.00001", title=w_title),
+              cand("10.1000/s.noyear", title=w_title, year=None),
+              cand("10.1000/s.noauth", title=w_title, authors=[]),
+              cand("10.1000/s.lowts", title="Neural Approaches to Inventory Forecasting"),
+              cand("10.31234/osf.io/abc", title=w_title, type_="posted-content")]
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[w_pre], by_author=decoys + [keep_two, keep_same])
+    found = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-18s", "作者搜尋篩選在邊界上：同年與 2/3 作者要收；1/3、缺 DOI／年份／作者、arXiv DOI、預印本、題目不相干都要擋",
+          exc is None and code == 0 and found == ["10.1000/s.same", "10.1000/s.two"],
+          f"exc={exc} exit={code} found={found}")
+
+    # t
+    a = cand("10.1000/t.a", title=w_title)
+    b = cand("10.1000/t.b")
+    c = cand("10.1000/t.c", title=w_title, authors=["Chen, Alice", "Okafor, Bob"])
+    dd = cand("10.1000/t.d", authors=["Chen, Alice", "Okafor, Bob"])
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[w_pre], by_author=[dd, b, c, a])
+    found = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-18t", "可能的正式版依（作者重疊、題目相似）由高到低排序，並截到三筆",
+          exc is None and code == 0 and found == ["10.1000/t.a", "10.1000/t.b", "10.1000/t.c"],
+          f"exc={exc} exit={code} found={found}")
+
+    # u
+    code, exc, d, _ = run("ARXIV:2410.01234", arxiv=[w_pre],
+                          by_author=urllib.error.URLError("模擬作者搜尋逾時"))
+    check("CX-18u", "作者搜尋本身失敗時不得吞掉：記成查詢失敗並回非零",
+          exc is None and code == 1 and d.get("crossref_error"),
+          f"exc={exc} exit={code} crossref_error={d.get('crossref_error')!r}")
+
+
+def test_versions_round3():
+    """CX-19a～p（2026-10-14 第三輪：surname() 改寫的反駁者 + cmd_versions 改寫的反駁者）。
+    a：姓氏相同、前綴不同的兩個人（García López／Pérez López，逗號寫法與混合寫法）不得判 found。
+    b：「de la Cruz, Ana」對「Cruz, Pedro」是不同人；對「Ana de la Cruz」是同一人。
+    c：日本姓 Ii 不是羅馬數字後綴——「Naosuke Ii」對「Ii, Naosuke」要判 found。
+    d：書評人與原著作者共用尾姓時，書評防護仍要發動（看名字首字母）。
+    e：S2 合併出的 DOI 指向預印本伺服器（SSRN）時不採用，改走標題／作者搜尋。
+    f：S2 合併的 DOI 在 Crossref 查無 → 不採用並說明；Crossref 5xx → 採用但信心 medium、不印 None。
+    g：DOI 輸入、靠標題推定出的正式版，信心必須是 medium（輸入 DOI 不是 S2 合併訊號）。
+    h：標題搜尋取最像的一筆，不是 Crossref 排第一的；比預印本早兩年以上的同名論文要排除。
+    i：輸入的 DOI 本身就是期刊論文時，它就是正式版，不去改引另一個同名 DOI。
+    j：來源有記錄但沒標題時，什麼都沒搜，不得寫「搜尋查無」；要回非零。
+    k：「arxiv: 2410.01234v2」的前導空白與版本後綴要清掉再送 S2，不得誤報編號不存在。
+    l：S2 有題目沒作者時，作者改用 arXiv 的，自填 DOI 才對得上作者。
+    m：較強訊號查詢失敗、較弱訊號找到時，信心不得高於 medium，且要說哪條路沒走完。
+    n：「可能的正式版」整體依（作者重疊、題目相似）排序：自填 DOI 對不上的那筆不得佔第一格。
+    o：網址形式的 DOI（https://doi.org/…）要被認成 DOI。
+    p：只剩一個字母的作者名（「J.」）沒有鑑別力，作者重疊回 None 而不是 1.0。
+    不連網：http_get 只回應明確列出的端點，其餘記成外洩並讓案例失敗。"""
+    import contextlib
+    import io
+    import types
+    import urllib.error
+    spec = importlib.util.spec_from_file_location(
+        "la_r3", os.path.join(SKILL, "scripts", "lit_api.py"))
+    la3 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(la3)
+
+    def http_err(url, code):
+        return urllib.error.HTTPError(url, code, "fixture", {}, None)
+
+    # ---- verify_one 驅動：名字比對 ----
+    def vrun(q_authors, cand_authors, title="Robust Widget Matching Under Domain Shift"):
+        leaked = []
+
+        def fake_http_get(url, *a, **k):
+            if "api.semanticscholar.org" in url and "/paper/search/match" in url:
+                return json.dumps({"data": []})
+            leaked.append(url)
+            raise OSError("測試替身拒絕連網：%s" % url)
+
+        la3.http_get = fake_http_get
+        la3.crossref_search = lambda t, rows=5, author=None: [{
+            "source": "crossref", "title": title, "year": 2021, "doi": "10.1000/widget.v",
+            "type": "journal-article", "container": "J. Widgets", "authors": list(cand_authors)}]
+        r = la3.verify_one(title, authors=list(q_authors), year=2021)
+        assert not leaked, leaked
+        return r.get("verdict_hint"), (r.get("identity_basis") or {}).get("identity_confidence")
+
+    v1, _ = vrun(["García López, María"], ["Pérez López, Juan"])
+    v2, _ = vrun(["García López, María"], ["Juan Pérez López"])
+    v3, _ = vrun(["García López, María"], ["María García López"])
+    ov_cc = la3.author_overlap(["García López, María"], ["Pérez López, Juan"])
+    ov_cm = la3.author_overlap(["García López, María"], ["Juan Pérez López"])
+    ov_same = la3.author_overlap(["García López, María"], ["María García López"])
+    # 直接斷言 author_overlap，不只看最終判定：書評防護（看名字首字母）會在後面把壞掉的
+    # 姓氏比對接住，只看判定的話姓氏那一層的突變永遠測不出來
+    check("CX-19a", "姓氏相同、前綴不同的兩個人作者重疊為 0、不得判 found（逗號與混合寫法）；同一人兩種寫法重疊 1、判 found",
+          ov_cc == 0.0 and ov_cm == 0.0 and ov_same == 1.0
+          and v1 != "found" and v2 != "found" and v3 == "found",
+          f"overlap 逗號對逗號={ov_cc} 逗號對混合={ov_cm} 同一人={ov_same} | 判定 {v1}/{v2}/{v3}")
+
+    v4, _ = vrun(["de la Cruz, Ana"], ["Cruz, Pedro"])
+    v5, _ = vrun(["de la Cruz, Ana"], ["Ana de la Cruz"])
+    check("CX-19b", "「de la Cruz, Ana」對「Cruz, Pedro」是不同人；對「Ana de la Cruz」是同一人",
+          v4 != "found" and v5 == "found", f"不同人={v4} 同一人={v5}")
+
+    v6, _ = vrun(["Naosuke Ii"], ["Ii, Naosuke"])
+    check("CX-19c", "日本姓 Ii 不是羅馬數字後綴：「Naosuke Ii」對「Ii, Naosuke」判 found",
+          v6 == "found" and la3.surname("Naosuke Ii") == "ii" and la3.surname("John Smith III") == "smith",
+          f"verdict={v6} surname(Naosuke Ii)={la3.surname('Naosuke Ii')!r}")
+
+    rev = {"page": "101-103", "type": "journal-article"}
+    fires = lambda sig: any("第一作者是他人" in s for s in sig)
+    d1 = fires(la3.derivative_signals(dict(rev, authors=["Pérez López, Juan", "García López, María"]),
+                                      query_authors=["García López, María"]))
+    d2 = fires(la3.derivative_signals(dict(rev, authors=["Smith, Mary", "Smith, John"]),
+                                      query_authors=["Smith, John"]))
+    d3 = fires(la3.derivative_signals({"page": "1-28", "type": "journal-article",
+                                       "authors": ["Smith, John", "Doe, Ann"]}, query_authors=["Smith, John"]))
+    check("CX-19d", "書評人與原著作者共用尾姓或同姓不同名時，書評防護仍發動；真論文不誤報",
+          d1 and d2 and not d3, f"共用尾姓={d1} 同姓不同名={d2} 真論文誤報={d3}")
+
+    check("CX-19p", "只剩一個字母的作者名沒有鑑別力：作者重疊回 None，不是 1.0",
+          la3.author_overlap(["J."], ["J"]) is None and la3.author_overlap(["Li, W."], ["Wei Li"]) == 1.0,
+          f"J.={la3.author_overlap(['J.'], ['J'])!r} Li={la3.author_overlap(['Li, W.'], ['Wei Li'])!r}")
+
+    # ---- cmd_versions 驅動 ----
+    w_title = "Neural Widget Alignment: A Contrastive Approach to Cross-Domain Widget Matching"
+    renamed_t = "Contrastive Cross-Domain Matching of Neural Widgets"
+    w_authors = ["Alice Chen", "Bob Okafor", "Carla Diaz"]
+    cr3 = ["Chen, Alice", "Okafor, Bob", "Diaz, Carla"]
+    w_pre = {"title": w_title, "year": 2024, "authors": w_authors, "doi": None}
+    w_s2 = {"title": w_title, "year": 2024, "authors": w_authors, "doi": None, "arxiv": "2410.01234"}
+    w_msg = {"title": [renamed_t], "DOI": "10.1000/widget.2025.7", "type": "journal-article",
+             "container-title": ["Journal of Widget Research"], "issued": {"date-parts": [[2025]]},
+             "author": [{"family": "Chen", "given": "Alice"}, {"family": "Okafor", "given": "Bob"},
+                        {"family": "Diaz", "given": "Carla"}]}
+
+    def msg(doi, title=renamed_t, year=2025, type_="journal-article", authors=cr3):
+        return {"title": [title], "DOI": doi, "type": type_, "container-title": ["J"],
+                "issued": {"date-parts": [[year]]},
+                "author": [{"family": a.split(",")[0], "given": a.split(",")[1].strip()} for a in authors]}
+
+    def cand(doi, title=renamed_t, year=2025, authors=cr3, type_="journal-article"):
+        return {"source": "crossref", "title": title, "year": year, "doi": doi,
+                "type": type_, "container": "Journal of Widget Research", "authors": list(authors)}
+
+    def run(ident, s2=None, s2_pid=None, arxiv=(), by_title=(), by_author=(), works=None,
+            works_status=None, arxiv_down=False):
+        works, works_status, leaked = works or {}, works_status or {}, []
+
+        def fake_http_get(url, *a, **k):
+            if "api.crossref.org/works/" in url:
+                for doi in list(works) + list(works_status):
+                    if url.endswith("/works/" + doi):
+                        st = works_status.get(doi)
+                        if st == 404:
+                            raise http_err(url, 404)
+                        if st == 500:
+                            raise http_err(url, 500)
+                        return json.dumps({"message": works[doi]})
+                raise http_err(url, 404)
+            leaked.append(url)
+            raise AssertionError("測試不得連網：http_get 被呼叫 %r" % (url,))
+
+        def fake_s2(pid):
+            if s2_pid is not None:
+                s2_pid.append(pid)
+            if s2 is None:
+                raise http_err("https://api.semanticscholar.org/graph/v1/paper/" + pid, 404)
+            return dict(s2)
+
+        def fake_arxiv(*a, **k):
+            if arxiv_down:
+                raise urllib.error.URLError("模擬 arXiv 逾時")
+            return [dict(e) for e in arxiv]
+
+        la3.http_get = fake_http_get
+        la3.s2_get_paper = fake_s2
+        la3.arxiv_query = fake_arxiv
+        la3.crossref_search = lambda t, rows=5, author=None: [dict(c) for c in (by_author if author else by_title)]
+        buf, code, exc = io.StringIO(), 0, None
+        try:
+            with contextlib.redirect_stdout(buf):
+                la3.cmd_versions(types.SimpleNamespace(id=ident))
+        except SystemExit as e:
+            code = e.code
+        except Exception as e:
+            exc = f"{type(e).__name__}: {e}"
+        out = buf.getvalue()
+        d = json.loads(out) if out.strip().startswith("{") else {}
+        return code, (exc or ("leaked=%r" % leaked if leaked else None)), d
+
+    # e
+    code, exc, d = run("ARXIV:2410.01234", s2=dict(w_s2, doi="10.2139/ssrn.999"), arxiv=[w_pre],
+                       works={"10.2139/ssrn.999": msg("10.2139/ssrn.999", title=w_title, type_="posted-content")},
+                       by_author=[cand("10.1000/widget.2025.7")])
+    check("CX-19e", "S2 合併出的 DOI 指向預印本伺服器（SSRN）時不採用、說明原因，並改走作者搜尋",
+          exc is None and code == 0 and d.get("published_version") is None
+          and "預印本" in (d.get("s2_note") or "")
+          and [p.get("doi") for p in d.get("possible_published_versions") or []] == ["10.1000/widget.2025.7"],
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r} s2_note={d.get('s2_note')!r}")
+
+    # f
+    code, exc, d = run("ARXIV:2410.01234", s2=dict(w_s2, doi="10.5281/zenodo.123"), arxiv=[w_pre],
+                       works_status={"10.5281/zenodo.123": 404})
+    f_404 = (exc is None and code == 0 and d.get("published_version") is None
+             and "查無" in (d.get("s2_note") or ""))
+    code2, exc2, d2 = run("ARXIV:2410.01234", s2=dict(w_s2, doi="10.1000/flaky.1"), arxiv=[w_pre],
+                          works_status={"10.1000/flaky.1": 500})
+    rec2 = d2.get("recommendation") or ""
+    f_500 = (exc2 is None and code2 == 0 and (d2.get("published_version") or {}).get("doi") == "10.1000/flaky.1"
+             and d2.get("confidence") == "medium" and "None" not in rec2 and "覆核" in (d2.get("confidence_note") or ""))
+    check("CX-19f", "S2 合併的 DOI：Crossref 查無就不採用並說明；Crossref 5xx 才採用，且信心 medium、不印 None",
+          f_404 and f_500, f"404案 ok={f_404} exc={exc} | 5xx案 ok={f_500} exc={exc2} rec={rec2[:50]!r}")
+
+    # g
+    code, exc, d = run("DOI:10.2139/ssrn.999",
+                       works={"10.2139/ssrn.999": msg("10.2139/ssrn.999", title=w_title, year=2024, type_="posted-content")},
+                       by_title=[cand("10.1000/j.1", title=w_title)])
+    check("CX-19g", "DOI 輸入、靠標題推定出的正式版信心必須是 medium（輸入 DOI 不算 S2 合併訊號）",
+          exc is None and code == 0 and (d.get("published_version") or {}).get("doi") == "10.1000/j.1"
+          and d.get("confidence") == "medium",
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r} confidence={d.get('confidence')!r}")
+
+    # h
+    near = cand("10.1000/near", title=w_title + " Revisited", authors=["Q, Zed"])   # title_sim≈0.956：過門檻但不是最像
+    old = cand("10.1000/old", title=w_title, year=2019)
+    exact = cand("10.1000/exact", title=w_title)
+    code, exc, d = run("ARXIV:2410.01234", arxiv=[w_pre], by_title=[old, near, exact])
+    check("CX-19h", "標題搜尋取最像、作者對得上的一筆，不是 Crossref 排第一的；早兩年以上的同名論文排除",
+          exc is None and code == 0 and (d.get("published_version") or {}).get("doi") == "10.1000/exact",
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r}")
+
+    # i
+    code, exc, d = run("DOI:10.1000/j.1", works={"10.1000/j.1": msg("10.1000/j.1", title=w_title)},
+                       by_title=[cand("10.1000/other", title=w_title, type_="proceedings-article")])
+    rec = d.get("recommendation") or ""
+    check("CX-19i", "輸入的 DOI 本身就是期刊論文時它就是正式版，不改引另一個同名 DOI",
+          exc is None and code == 0 and (d.get("published_version") or {}).get("doi") == "10.1000/j.1"
+          and d.get("version_link") == "input_doi_is_published" and "可直接引用" in rec,
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r} rec={rec[:40]!r}")
+
+    # j
+    code, exc, d = run("ARXIV:2410.01234", s2=dict(w_s2, title=None, authors=[]), arxiv=[])
+    rec = d.get("recommendation") or ""
+    check("CX-19j", "來源有記錄但沒標題時，什麼都沒搜，不得寫「搜尋查無」，要回非零",
+          exc is None and code == 1 and "未做任何版本搜尋" in rec and "搜尋查無" not in rec,
+          f"exc={exc} exit={code} rec={rec[:50]!r}")
+
+    # k
+    pids = []
+    code, exc, d = run("arxiv: 2410.01234v2", s2=w_s2, s2_pid=pids, arxiv=[w_pre])
+    check("CX-19k", "arXiv 編號的前導空白與版本後綴要清掉再送 S2，不得誤報編號不存在",
+          exc is None and code == 0 and pids == ["ARXIV:2410.01234"] and d.get("arxiv") == "2410.01234"
+          and d.get("error") != "ARXIV_ID_NOT_FOUND",
+          f"exc={exc} exit={code} pids={pids} arxiv={d.get('arxiv')!r} error={d.get('error')!r}")
+
+    # l
+    code, exc, d = run("ARXIV:2410.01234", s2=dict(w_s2, authors=[]),
+                       arxiv=[dict(w_pre, doi="10.1000/widget.2025.7")],
+                       works={"10.1000/widget.2025.7": w_msg})
+    check("CX-19l", "S2 有題目沒作者時改用 arXiv 的作者，作者自填 DOI 才對得上、被當成正式版",
+          exc is None and code == 0 and (d.get("published_version") or {}).get("doi") == "10.1000/widget.2025.7"
+          and d.get("version_link") == "arxiv_journal_ref",
+          f"exc={exc} exit={code} pv={(d.get('published_version') or {}).get('doi')!r} "
+          f"poss={[p.get('basis') for p in d.get('possible_published_versions') or []]}")
+
+    # m
+    code, exc, d = run("ARXIV:2410.01234", s2=w_s2, arxiv_down=True, by_title=[cand("10.1000/exact", title=w_title)])
+    note = d.get("confidence_note") or ""
+    check("CX-19m", "較強訊號（arXiv）查詢失敗、較弱訊號（標題）找到時：可用但信心 medium，並說哪條路沒走完",
+          exc is None and code == 0 and (d.get("published_version") or {}).get("doi") == "10.1000/exact"
+          and d.get("confidence") == "medium" and "查詢失敗" in note and d.get("arxiv_error"),
+          f"exc={exc} exit={code} confidence={d.get('confidence')!r} note={note[-40:]!r}")
+
+    # n
+    junk_msg = msg("10.1000/junk", title="Soil Moisture Sensing in Arid Vineyards", authors=["Nobody, Z"])
+    good = [cand("10.1000/a1", title=w_title), cand("10.1000/a2"), cand("10.1000/a3", authors=["Chen, Alice", "Okafor, Bob"])]
+    code, exc, d = run("ARXIV:2410.01234", arxiv=[dict(w_pre, doi="10.1000/junk")],
+                       works={"10.1000/junk": junk_msg}, by_author=good)
+    found = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-19n", "「可能的正式版」整體依（作者重疊、題目相似）排序：自填 DOI 對不上的那筆不得佔第一格",
+          exc is None and code == 0 and found == ["10.1000/a1", "10.1000/a2", "10.1000/a3"],
+          f"exc={exc} exit={code} found={found}")
+
+    # o
+    code, exc, d = run("https://doi.org/10.1000/j.1", works={"10.1000/j.1": msg("10.1000/j.1", title=w_title)})
+    check("CX-19o", "網址形式的 DOI 被認成 DOI 並走 DOI 路徑",
+          la3.looks_like_doi("https://doi.org/10.1000/j.1") and not la3.looks_like_doi("Risk/Benefit Analysis")
+          and exc is None and code == 0 and d.get("version_link") == "input_doi_is_published",
+          f"exc={exc} exit={code} link={d.get('version_link')!r}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -659,7 +1355,24 @@ def main():
               test_crash_paths, test_absence_semantics, test_integrity_parsing,
               test_rate_limiter_concurrency, test_verify_one_shared_logic,
               test_entity_decoding, test_chinese_punctuation,
-              test_fulltext_boundary, test_output_hardening]
+              test_fulltext_boundary, test_output_hardening,
+              test_versions_s2_absent, test_versions_published_lookup,
+              test_versions_review_fixes, test_versions_round3]
+    # 封網閘門。本套件宣稱「不連網」，但這句話以前只寫在 README：MED-05/06 一直真的在連
+    # Semantic Scholar，直到有人手動封網重跑才看出來——一次性的檢查抓得到這一次，抓不到下一次。
+    # 所以寫成閘門：本行程的對外連線一律攔下並記錄，跑完只要有一筆，NET-01 就失敗。
+    # （run_cli 起的子行程不在攔截範圍：它們只跑輸入驗證、本機檔案解析這類送出請求前就結束的路徑。）
+    import socket
+    attempts = []
+
+    def _blocked(*a, **k):
+        attempts.append(repr(a[1] if len(a) > 1 and isinstance(a[0], socket.socket) else a[:1]))
+        raise OSError("test_regression 封網：測試不得連網")
+
+    socket.socket.connect = _blocked
+    socket.create_connection = _blocked
+    socket.getaddrinfo = _blocked
+
     for s in suites:
         if args.filter and args.filter.lower() not in s.__name__.lower():
             continue
@@ -667,9 +1380,13 @@ def main():
             s()
         except Exception as e:  # 測試本身壞掉也要如實顯示，不可靜默跳過
             check(s.__name__, f"測試套件自身異常：{type(e).__name__}", False, str(e)[:200])
+    check("NET-01", "整個套件執行期間沒有任何對外連線（封網閘門）",
+          not attempts, f"{len(attempts)} 次連線嘗試：{attempts[:3]}")
 
-    shown = [r for r in RESULTS if not args.filter or args.filter.lower() in r["id"].lower()
-             or args.filter.lower() in r["desc"].lower()] if args.filter else RESULTS
+    # -k 只決定「跑哪些套件」，不再過濾結果。以前結果還會依 id／描述再篩一次，於是
+    # `-k versions` 跑了 test_versions_published_lookup，但 CX-18d 的描述裡沒有「versions」，
+    # 它失敗了也不會顯示、離開碼仍是 0——查證時用 -k 的人會被騙。
+    shown = RESULTS
     failed = [r for r in shown if not r["ok"]]
     for r in shown:
         if args.verbose or not r["ok"]:
