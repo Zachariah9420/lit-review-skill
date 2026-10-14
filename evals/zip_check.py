@@ -39,11 +39,18 @@ for n in names:
 has_env = any(n.endswith(".env") for n in names)
 has_git = any(".git/" in n for n in names)
 has_pyc = any("__pycache__" in n for n in names)
+# 每一段路徑都要看：備份目錄 scripts.bak-20261014/lit_api.py 的最後一段是乾淨的檔名。
+# 邊界規則同 package_skill.BAK_RE（.bake 不算）。
+bak_files = [n for n in names if any(re.search(r"\.bak(?:$|[-._])", seg) for seg in n.split("/"))]
 
 print(f"檔案數：{len(names)}｜壓縮後 {sum(i.compress_size for i in z.infolist())/1024:.0f} KB")
 print("含 .env：", has_env)
 print("含 .git：", has_git)
 print("含 __pycache__：", has_pyc)
+print("含 .bak 備份檔：", bool(bak_files))
+if bak_files:
+    # 備份檔是改動前的舊內容，常帶著已清掉的本機路徑或金鑰；打包器會擋，但手動壓縮的 ZIP 不會。
+    hits["含 .bak 備份檔"] = ["%s: 備份檔不該出貨" % n for n in bak_files]
 if hits:
     print("\n⚠️ 風險項：")
     for label, items in hits.items():

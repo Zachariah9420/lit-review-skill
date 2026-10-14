@@ -93,6 +93,32 @@ HTTP_WORST_CASE = ((HTTP_RETRIES + 1) * SOCKET_TIMEOUT
 # 失敗變成一次永久性的「查無」。
 RETRYABLE_STATUS = (500, 502, 503, 504, 408, 522, 524)
 
+# Semantic Scholar 沒金鑰時共用一個很擠的池子，429 是常態。指引要在**第一次** 429 就給、
+# 而且要能照著做：去哪申請、.env 要寫哪一行、程式從哪讀 .env。以前只在重試全數用完、
+# 使用者已經等了一分多鐘之後才說「長期解法是申請 key」，卻沒說去哪申請、怎麼放。
+S2_API_PAGE = "https://www.semanticscholar.org/product/api"
+S2_KEY_HINT = ("免費金鑰申請頁（Semantic Scholar 官方）：" + S2_API_PAGE + " ；"
+               "取得後在 .env 加一行：S2_API_KEY=<your key> ；"
+               "程式先讀目前資料夾的 .env，再讀 ~/.env。")
+_s2_429_warned = False
+_s2_429_seen = False     # 這個行程裡 Semantic Scholar 回過 429（不論有沒有金鑰）：main() 的 hint 靠它歸因
+
+
+def _warn_s2_429(url, will_retry=True):
+    """對 Semantic Scholar 的第一次 429，立刻在 stderr 印出申請金鑰的指引（每個行程只印一次）。
+    已設 S2_API_KEY 還遇到 429 就不是缺金鑰，不印。stdout 的 JSON 不受影響。"""
+    global _s2_429_warned, _s2_429_seen
+    if "semanticscholar.org" not in url:
+        return
+    _s2_429_seen = True          # 先記下來，有沒有金鑰都記：search 退到 OpenAlex 之後，最後拋出的
+    if _s2_429_warned or os.environ.get("S2_API_KEY"):   # 例外是 OpenAlex 的，光看它看不出 S2 曾經 429
+        return
+    _s2_429_warned = True
+    # 只在真的還會重試時才說「會自動退避重試」：最後一次嘗試的 429 接著就是 raise，
+    # 說會重試是承諾程式不會做的事。
+    tail = "程式會自動退避重試。" if will_retry else "重試已用完，這次指令以 429 結束。"
+    print("Semantic Scholar 回 429（無金鑰時共享池很擠）；" + tail + S2_KEY_HINT, file=sys.stderr)
+
 
 def http_get(url, headers=None, min_interval=0.0, bucket="default",
              retries=HTTP_RETRIES, data=None):
@@ -115,6 +141,8 @@ def http_get(url, headers=None, min_interval=0.0, bucket="default",
             last_err = e
             if e.code == 404:
                 raise
+            if e.code == 429:
+                _warn_s2_429(url, will_retry=attempt < retries)
             if e.code == 429 and attempt < retries:
                 time.sleep((2 ** attempt) * 6)  # S2 無 key 時共享池很擠，退避要夠長
                 continue
@@ -544,7 +572,7 @@ def cmd_versions(args):
     找正式版的訊號由強到弱：① S2 版本合併（其記錄帶非 arXiv 的 DOI，且 Crossref 查得到、不是
     預印本）；② 作者在 arXiv 自填的期刊 DOI（取回 Crossref 書目、作者與題目對得上才算）；
     ③ Crossref 標題搜尋（標題近乎相同，年份不早於預印本，取最像的一筆）；④ Crossref 作者搜尋
-    （改了標題才發表的版本，只列為「可能」，不自動改引）。
+    （第一與第二作者各查一次、依 DOI 合併；改了標題才發表的版本，只列為「可能」，不自動改引）。
     arXiv 自己的 DOI 與預印本伺服器（posted-content）在每一層都不算正式版。
     """
     ident = args.id.strip()
@@ -690,7 +718,18 @@ def cmd_versions(args):
     if title and named and not out["published_version"]:
         author_searched = True
         try:
-            for c in crossref_search(title, rows=10, author=surname(named[0])):
+            # 發表時第一、第二作者對調很常見（貢獻排序重談）：只查第一作者的姓氏，對調後的正式版
+            # 在 Crossref 的作者查詢裡就排不進前十筆。兩位各查一次，依 DOI 合併後再套下面同一組篩選。
+            who = [surname(named[0])] + ([surname(named[1])] if len(named) > 1 else [])
+            pool, fetch_err = {}, None
+            for sn in dict.fromkeys(s for s in who if s):
+                try:
+                    for c in crossref_search(title, rows=10, author=sn):
+                        if c.get("doi"):
+                            pool.setdefault(c["doi"].lower(), c)
+                except Exception as e:      # 一位查失敗不丟掉另一位已經拿到的結果，但最後要如實回報
+                    fetch_err = fetch_err or e
+            for c in pool.values():
                 if not c.get("doi") or _is_preprint(c):
                     continue                          # 沒 DOI，或本身就是預印本
                 if pre_year and (not c.get("year") or c["year"] < pre_year - 1):
@@ -703,6 +742,8 @@ def cmd_versions(args):
                     # 期刊先發表、之後才上傳 arXiv 的情形不少：放寬一年，但標出來
                     item["year_before_preprint"] = True
                 possible.append(item)
+            if fetch_err:
+                raise fetch_err
         except Exception as e:
             out.setdefault("crossref_error", str(e))
     # 整體排序再截斷：自填 DOI 對不上的那筆不該只因為先進來就佔第一格
@@ -784,7 +825,7 @@ def cmd_versions(args):
 
 
 def cmd_fulltext(args):
-    """查合法可取得的全文位置(Unpaywall + S2/OpenAlex 的 OA 欄位)。
+    """查合法可取得的全文位置（Unpaywall + S2 的 OA 欄位；目前沒有 OpenAlex 路徑）。
 
     刻意**不**嘗試繞過付費牆：付費牆內的文獻請走機構訂閱(Google Scholar Button
     的「大學圖書館找全文」或你所在單位的 link resolver)，那是正當授權路徑。
@@ -796,7 +837,7 @@ def cmd_fulltext(args):
         rec = {"doi": doi, "oa_locations": []}
         if not mailto:
             rec["note"] = ("Unpaywall 要求提供聯絡 email：請在 .env 設 CROSSREF_MAILTO "
-                           "(同一個值兩邊共用)，否則只能用 S2/OpenAlex 的 OA 欄位")
+                           "(同一個值兩邊共用)，否則只能用 S2 的 OA 欄位")
         else:
             try:
                 u = (f"https://api.unpaywall.org/v2/{urllib.parse.quote(doi, safe='/')}"
@@ -816,7 +857,7 @@ def cmd_fulltext(args):
                                 else f"Unpaywall 查詢失敗 HTTP {e.code}")
             except OSError as e:
                 rec["error"] = f"Unpaywall 查詢失敗：{e}"
-        # 補 S2/OpenAlex 的 OA 欄位(Unpaywall 沒收錄時仍可能有)
+        # 補 S2 的 OA 欄位（Unpaywall 沒收錄時仍可能有；目前沒有 OpenAlex 路徑）
         if not rec["oa_locations"]:
             try:
                 sp = s2_get_paper("DOI:" + doi)
@@ -1717,8 +1758,26 @@ def main():
     except OSError as e:  # 網路層錯誤統一輸出 JSON，不要 traceback
         out = {"error": str(e)}
         if isinstance(e, urllib.error.HTTPError) and e.code == 429:
-            out["hint"] = ("Semantic Scholar 共享池壅塞(重試後仍 429)。"
-                           "等 60–120 秒再跑同一指令即可；長期解法是申請免費 S2_API_KEY 放入 .env。")
+            # 429 不一定來自 Semantic Scholar：Crossref、OpenAlex 也會回。以前這裡不看主機、
+            # 不看有沒有金鑰，一律叫使用者去申請 S2 金鑰——歸因錯誤的處方比沒有處方更糟。
+            # 不能用 getattr(e, "url")：HTTPError 在沒有回應體（fp=None）時，繼承自 tempfile 的
+            # __getattr__ 對 .url 丟的是 KeyError 不是 AttributeError，getattr 的預設值擋不住，
+            # 整個錯誤處理器會炸掉、exit 變 0。filename 是 __init__ 直接寫進 __dict__ 的，安全。
+            try:
+                u = e.filename or ""
+            except Exception:
+                u = ""
+            host = urllib.parse.urlsplit(u).netloc or "上游服務"
+            # 用「本行程 S2 回過 429」的旗標歸因，不用最後那個例外的主機：search 會在 S2 429 後退到
+            # OpenAlex，最後拋出的是 OpenAlex 的 429，但該修的仍是 S2 金鑰。
+            if _s2_429_seen and not os.environ.get("S2_API_KEY"):
+                out["hint"] = ("Semantic Scholar 共享池壅塞（重試後仍 429）。等 60–120 秒再跑同一指令；"
+                               "長期解法是申請免費 S2_API_KEY 放入 .env。" + S2_KEY_HINT)
+            elif _s2_429_seen:
+                out["hint"] = ("已設 S2_API_KEY 仍遇到 429（重試後仍 429）：這是金鑰本身的速率上限，"
+                               "不是缺金鑰；等 60–120 秒再跑同一指令，或降低 --workers")
+            else:
+                out["hint"] = "%s 回 429（速率限制，重試後仍 429）：等 60–120 秒再跑同一指令" % host
         print(json.dumps(out, ensure_ascii=False))
         sys.exit(1)
     except (ValueError, ET.ParseError) as e:

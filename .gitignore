@@ -9,3 +9,8 @@ __pycache__/
 
 # 自檢預覽產物不入庫
 assets/_preview_*.png
+
+# 備份檔不入庫（也不進 ZIP）；有邊界，*.bake 這種合法檔名不受影響
+*.bak
+*.bak-*
+*.bak.*

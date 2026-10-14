@@ -144,7 +144,7 @@ Create a `.env` in your project directory:
 
 ```
 S2_API_KEY=...        # free from semanticscholar.org/product/api — avoids shared-pool 429s
-CROSSREF_MAILTO=you@example.com   # joins the Crossref/OpenAlex polite pools
+CROSSREF_MAILTO=you@example.com   # Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email)
 ```
 
 Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`).
@@ -171,8 +171,8 @@ handed to you** — a package that leaks is worse than no package.
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 113 frozen cases, no network, seconds
-python evals/mutation_check.py      # re-introduces 44 fixed bugs; each must be caught
+python evals/test_regression.py     # 119 frozen cases, no network, seconds
+python evals/mutation_check.py      # re-introduces 57 fixed bugs; each must be caught
 ```
 
 `test_regression.py` freezes every defect found so far — each case is tagged with where it came from (`TS-*` black-box stress test, `CX-*` independent Codex source review, `DR-*` design review). It calls the production functions directly with frozen candidate data, so it needs no API access and runs in seconds.
@@ -190,7 +190,7 @@ What has **not** been exercised: other people's fields (medicine, social science
 - **Isolation firewalls.** Evidence isolation (model memory may raise suspicion, only supplied evidence may convict), role isolation (the writer never audits itself), injection isolation (retrieved abstracts/PDFs are untrusted data — embedded instructions are reported, never followed).
 - **Quality red flags.** Zero-citation papers in low-tier venues get flagged automatically (with an age gate so new papers aren't punished for being new).
 - **Cost tiers.** `quick` (single agent, labeled "no independent audit") / default (one fresh-context skeptic, ~1.5–2×) / `thorough` (per-claim adversarial verification, 5–10×) — verification intensity follows the cost of being wrong.
-- **Resilient.** Automatic fallbacks: Semantic Scholar → OpenAlex, arXiv → Semantic Scholar. Rate limiting and 429 backoff built in.
+- **Resilient.** Automatic fallbacks for `search`/`snowball`: Semantic Scholar → OpenAlex, arXiv → Semantic Scholar. `verify` has no fallback on purpose — a failed source is always surfaced (`single_source_degraded` when a plausible candidate survived, `partial_failure` when nothing plausible was found), never hidden as "not found". Rate limiting and 429 backoff built in.
 
 ## Field applicability (measured, not assumed)
 

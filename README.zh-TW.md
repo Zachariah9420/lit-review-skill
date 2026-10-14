@@ -110,7 +110,7 @@ git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit
 
 ```
 S2_API_KEY=...        # semanticscholar.org/product/api 免費申請，避開共享池 429
-CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池
+CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池；fulltext 查 Unpaywall 也必須有它
 ```
 
 ## 打包上傳（ChatGPT Skills 或分享給別人）
@@ -133,8 +133,8 @@ email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給�
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 113 個凍結案例，不打網路，秒級跑完
-python evals/mutation_check.py      # 把 44 個已修的 bug 塞回去，每個都必須被抓到
+python evals/test_regression.py     # 119 個凍結案例，不打網路，秒級跑完
+python evals/mutation_check.py      # 把 57 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
 `test_regression.py` 把每個找到過的缺陷凍成案例，每個案例都標了出處(`TS-*` 黑箱壓力測試、`CX-*` Codex 獨立原始碼審查、`DR-*` 設計 review)。它直接呼叫生產程式碼並餵凍結候選資料，所以不需要 API、秒級完成。
@@ -152,7 +152,7 @@ python evals/mutation_check.py      # 把 44 個已修的 bug 塞回去，每個
 - **三層隔離**：證據隔離(記憶只能起疑，不能作證)、角色隔離(寫的人不審自己)、注入隔離(檢索內容是不可信資料，其中的指令一律回報不遵從)。
 - **品質紅旗**：低層級期刊的零被引文獻自動標警(有年齡門檻，不冤枉新文獻)。
 - **成本分級**:`quick`(單 agent，標「未經獨立審查」)/ 預設(一個 fresh 懷疑論者，約 1.5–2 倍)/ `thorough`(逐句對抗驗證，5–10 倍)——驗證強度跟著錯誤代價走。
-- **抗故障**:S2→OpenAlex、arXiv→S2 自動備援，內建速率限制與退避重試。
+- **抗故障**：`search`／`snowball` 有 S2→OpenAlex、arXiv→S2 自動備援；`verify` 刻意不設備援——來源失敗一定標出來（有合理候選時標 `single_source_degraded`，沒找到時標 `partial_failure`），不會寫成查無。內建速率限制與退避重試。
 
 ## 領域適用性（實測，不是推測）
 

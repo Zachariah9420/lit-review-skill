@@ -148,7 +148,7 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
    - `similar_found`：標題相近但有出入——人工比對候選，可能是版本差異(preprint vs 正式版)、副標題被省略、也可能是真的寫錯，判讀後歸類。
    - `not_found`：換一次查詢再試(去掉副標題、修正明顯錯字)；仍查無 → 標記「🚫 查無此文獻」。**查不到 ≠ 不存在**(書籍章節、非英文、很新的文章都可能查不到)，報告要**列名實際查過的來源**(verify 查的是 Crossref + Semantic Scholar；若另用其他工具補查也一併列名)寫「X + Y 皆查無」，而不是籠統寫「三庫」或斷言它是捏造的；若 verify 回 `partial_failure`(來源查詢失敗)，那是「查詢未完成」不是「查無」，重試或標註後再下結論；但若標題含糊、作者查無此人、年份也對不上，可註明「疑似幻覺引用，建議優先人工確認」。環境有網頁搜尋工具時，對疑似幻覺引用值得再做一層交叉確認(搜期刊名+卷期驗證該期刊/該期是否真的存在)，能把「查無」升級成更有力的證據。
 1.5 **撤稿檢查(預設必跑)**：所有查到 DOI 的引用，批次跑 `retract`(一次可帶多個 DOI，零 LLM 成本)。🚨 撤稿級記錄 → 報告置頂警示「不可引用」；⚠️ 更正級 → 提醒確認更正內容是否影響引用的論點。引用被撤稿文獻比幻覺引用更難堪，而這是純機器可查的。
-2. **書目正確性**：拿 `verify` 回傳的 Crossref 權威資料(有 DOI 可再 `crossref-doi` 確認)逐欄比對使用者的版本：年份、作者(順序與拼字)、期刊/會議名、卷期頁碼。列出每一處差異。特別注意：引用 arXiv 版但其實已有正式發表版 → 用 `versions` 解析（輸入可為 arXiv 編號、DOI、doi.org 網址或完整標題，arXiv 編號的前導空白與 vN 後綴會先清掉；訊號由強到弱：①S2 版本合併訊號，其 DOI 還要再向 Crossref 覆核——Crossref 查無（Zenodo、OSF 等 DataCite 的 DOI 常見）或標為預印本伺服器的紀錄就不採用並註明原因，只有 Crossref 逾時或 5xx 才採用，信心降為 medium 並標「未經 Crossref 覆核」；②作者在 arXiv 自填的期刊 DOI——只要還沒找到正式版就會檢查，但必須 Crossref 查得到、不是預印本、至少一半作者對得上、題目相關（單一作者的論文題目要更接近）才採用，否則只列為「可能的正式版」或註明未採用的原因；③Crossref 標題搜尋，要求標題近乎相同，年份比預印本早超過一年的候選排除，取標題最像的一筆（作者對得上者優先）；④Crossref 第一作者搜尋，專找改了標題才發表的版本，只列為「可能的正式版」（最多 3 筆，依作者重疊、再依題目相似度排序，信心 low）供人工核對，不自動改引。預印本伺服器的紀錄（Crossref 標為 posted-content，如 SSRN、Research Square、bioRxiv、medRxiv）與 arXiv 自己的 DOI 在四步都不算正式版。輸入本身若是已正式發表的 DOI，該紀錄就是正式版（「可直接引用」），不會再去找同名的別個 DOI；已找到正式版但有來源查詢失敗時，信心最高 medium 並註明哪一條失敗，輸入 DOI 本身就是正式版者不在此限），有正式版就附其 DOI 建議改引；查無正式版時會警告很多期刊不接受 arXiv 預印本，不再說引 arXiv 版即可；S2 與 arXiv 都不認得該編號則回 `ARXIV_ID_NOT_FOUND` 並以非零離開，不替它背書；來源證實該編號存在卻沒有標題可比對時，不做任何搜尋，同樣以非零離開並明說「沒有標題可搜」（不說成「搜尋查無」）。引用列表本身已附 DOI 時，可先用 `batch` 一次抓齊 S2 詳情(摘要供支持度判讀)省呼叫；但 **batch/paper 的 not_found 只代表 S2 沒收錄該 ID**(其 DOI 覆蓋不完整，實測連正規期刊文獻都可能查無)，存在性仍以 `verify`(Crossref+S2 雙源)為準。
+2. **書目正確性**：拿 `verify` 回傳的 Crossref 權威資料(有 DOI 可再 `crossref-doi` 確認)逐欄比對使用者的版本：年份、作者(順序與拼字)、期刊/會議名、卷期頁碼。列出每一處差異。特別注意：引用 arXiv 版但其實已有正式發表版 → 用 `versions` 解析（輸入可為 arXiv 編號、DOI、doi.org 網址或完整標題，arXiv 編號的前導空白與 vN 後綴會先清掉；訊號由強到弱：①S2 版本合併訊號，其 DOI 還要再向 Crossref 覆核——Crossref 查無（Zenodo、OSF 等 DataCite 的 DOI 常見）或標為預印本伺服器的紀錄就不採用並註明原因，只有 Crossref 逾時或 5xx 才採用，信心降為 medium 並標「未經 Crossref 覆核」；②作者在 arXiv 自填的期刊 DOI——只要還沒找到正式版就會檢查，但必須 Crossref 查得到、不是預印本、至少一半作者對得上、題目相關（單一作者的論文題目要更接近）才採用，否則只列為「可能的正式版」或註明未採用的原因；③Crossref 標題搜尋，要求標題近乎相同，年份比預印本早超過一年的候選排除，取標題最像的一筆（作者對得上者優先）；④Crossref 作者搜尋（第一與第二作者各查一次），專找改了標題才發表的版本，只列為「可能的正式版」（最多 3 筆，依作者重疊、再依題目相似度排序，信心 low）供人工核對，不自動改引。預印本伺服器的紀錄（Crossref 標為 posted-content，如 SSRN、Research Square、bioRxiv、medRxiv）與 arXiv 自己的 DOI 在四步都不算正式版。輸入本身若是已正式發表的 DOI，該紀錄就是正式版（「可直接引用」），不會再去找同名的別個 DOI；已找到正式版但有來源查詢失敗時，信心最高 medium 並註明哪一條失敗，輸入 DOI 本身就是正式版者不在此限），有正式版就附其 DOI 建議改引；查無正式版時會警告很多期刊不接受 arXiv 預印本，不再說引 arXiv 版即可；S2 與 arXiv 都不認得該編號則回 `ARXIV_ID_NOT_FOUND` 並以非零離開，不替它背書；來源證實該編號存在卻沒有標題可比對時，不做任何搜尋，同樣以非零離開並明說「沒有標題可搜」（不說成「搜尋查無」）。引用列表本身已附 DOI 時，可先用 `batch` 一次抓齊 S2 詳情(摘要供支持度判讀)省呼叫；但 **batch/paper 的 not_found 只代表 S2 沒收錄該 ID**(其 DOI 覆蓋不完整，實測連正規期刊文獻都可能查無)，存在性仍以 `verify`(Crossref+S2 雙源)為準。
 3. **內容支持度**：回到文章，找出引用該文獻的句子，對照 `verify`/`paper` 回傳的摘要判斷：
    - ✅ 支持：摘要明確涵蓋該論點
    - ⚠️ 部分支持：相關但論點過度延伸(例如文獻說「可改善」，文中寫「顯著優於」)
@@ -221,8 +221,8 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 113 個凍結案例，不打 API，秒級
-python evals/mutation_check.py      # 驗證測試本身有偵測力(44 個突變都須被抓到)
+python evals/test_regression.py     # 119 個凍結案例，不打 API，秒級
+python evals/mutation_check.py      # 驗證測試本身有偵測力(57 個突變都須被抓到)
 ```
 
 修了新缺陷就**在 `test_regression.py` 加一個案例**(標出處：`TS-*` 壓測 / `CX-*` 原始碼審查 / `DR-*` 設計 review)，並在 `mutation_check.py` 加對應突變——否則下一次改動可能靜默把它弄壞。測試必須呼叫生產函式(`rank_candidates`、`decide_verdict` 等),**不可在測試裡重新實作邏輯**：突變測試抓過這種假測試。

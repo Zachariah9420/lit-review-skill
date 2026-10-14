@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """掃描 repo 的文件與程式是否同步：指令數、測試數、功能清單、雙語鏡像。"""
+import importlib.util
 import os
 import re
 import subprocess
@@ -49,7 +50,14 @@ for f in ("README.md", "README.zh-TW.md", "SKILL.md", "evals/README.md",
 
 # 3) 突變數宣稱
 mut = read("evals/mutation_check.py")
-n_mut = mut.count('", "lit_api.py"') + mut.count('", "cite_integrity.py"')
+# 以前這裡數的是目標檔名出現幾次（只認 lit_api.py 與 cite_integrity.py），突變表一旦
+# 有別的目標檔（package_skill.py、zip_check.py、.gitignore、make_fixtures.py）就少算，
+# 而少算的方向剛好讓文件「看起來」對。直接載入 mutation_check 讀 MUTATIONS 的長度，
+# 它有 __main__ 保護、載入不會跑突變。
+_spec = importlib.util.spec_from_file_location("_mc", os.path.join(R, "evals", "mutation_check.py"))
+_mc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mc)
+n_mut = len(_mc.MUTATIONS)
 print(f"■ 突變數實際：{n_mut}")
 for f in ("README.md", "README.zh-TW.md", "SKILL.md", "evals/README.md"):
     txt = read(f)

@@ -89,11 +89,11 @@ Commands are optional — the agent infers the mode from your input. For precise
 
 ## Optional API keys (recommended)
 
-Works without keys, but the Semantic Scholar free pool jams at peak times (the skill auto-falls-back to OpenAlex — results stay trustworthy, ranking gets slightly noisier). Create `.env` in your **project directory**:
+Works without keys, but the Semantic Scholar free pool jams at peak times. When it does, `search` and `snowball` (for DOI inputs) auto-fall-back to OpenAlex — results stay trustworthy, ranking gets slightly noisier. Citation verification (`verify` / `verify-batch`, and therefore `check`) queries only Crossref and Semantic Scholar and has **no** OpenAlex fallback: if one of the two fails, the verdict is flagged as single-source (`single_source_degraded`); if a source failed and nothing plausible was found, it is `partial_failure` (lookup incomplete, not "not found"). Create `.env` in your **project directory**, or put a copy in `~/.env` as a global fallback that works from any working directory (the script reads the current directory's `.env` first, then `~/.env`):
 
 ```
 S2_API_KEY=your-key           # free at semanticscholar.org/product/api, issued in a few business days
-CROSSREF_MAILTO=you@example.com   # joins the Crossref/OpenAlex polite pools
+CROSSREF_MAILTO=you@example.com   # joins the Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email; without it only Semantic Scholar's OA field is used)
 ```
 
 **Never commit `.env`** (this repo's .gitignore already blocks it).
@@ -118,7 +118,7 @@ Principle: **verification intensity follows the cost of being wrong.** Internall
 - ⚠️ Partially supported: related, but your wording is half a grade stronger than the evidence (most common — e.g. the paper says "associated", you wrote "causes"). The report tells you *which half of the sentence* each paper can carry
 - ❌ Likely unsupported: topic mismatch — citing this will get caught
 - ❓ Cannot judge: no abstract available (paywall, publisher withholding). **This is not a red flag about the paper** — it's the honest limit of automated checking; a link is attached for manual review
-- 🚫 Not found: absent from all three databases. Note the wording is "not found in any index", never "fabricated" — book chapters and very recent papers legitimately escape indexing
+- 🚫 Not found: no plausible match in the sources actually queried. The report names them (`verify` queries Crossref + Semantic Scholar) and says "X + Y both found nothing" — not a vague "all databases", and never "fabricated": book chapters and very recent papers legitimately escape indexing
 
 **Evidence levels** (matrix and deep-check reports): `[abstract]`, `[full text p.X]`, `[bibliographic]`, `[synthesis]`, `[❓]` — so you know how reliable each verdict is.
 
@@ -127,7 +127,7 @@ Principle: **verification intensity follows the cost of being wrong.** Internall
 ## FAQ
 
 **Q: It's slow?**
-Without a key, Semantic Scholar rate-limits and the script backs off and retries (normal). A free key fixes it; meanwhile results auto-fall-back to OpenAlex.
+Without a key, Semantic Scholar rate-limits and the script backs off and retries (normal). A free key fixes it; meanwhile `search` and `snowball` auto-fall-back to OpenAlex (citation verification has no such fallback).
 
 **Q: Chinese-language references?**
 The academic APIs barely index them. With a Google Scholar tool available, the skill searches by the original title (marked "medium confidence"); otherwise the entry goes to the manual-check list. It will never translate a title into English and force-match — that fabricates pairings.

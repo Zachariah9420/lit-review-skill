@@ -3,8 +3,8 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 113 frozen cases
-python evals/mutation_check.py      # 44 mutations; each must be caught
+python evals/test_regression.py     # 119 frozen cases
+python evals/mutation_check.py      # 57 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
 

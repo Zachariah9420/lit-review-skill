@@ -140,4 +140,4 @@ python scripts/cite_integrity.py <檔案>        # 支援 .docx/.md/.txt
 1. 首次：對每個 DOI 跑 `snowball citations`，把 citing paper 清單存 `watch_state.json`。
 2. 之後每次執行：重跑 → 與 state diff → 新增者中被引數或相關性突出的，列入摘要通知；更新 state。
 3. 排程：Claude Code 可用排程功能(如每週一次)自動跑；**Codex 無排程**，同指令手動執行即可——文件要如實寫這個差異。
-4. 誠實限制：citations 端點只回傳前 N 筆，超高被引文獻的 diff 可能漏；新文獻被引數普遍為 0，判「突出」主要靠相關性而非引用數。
+4. 誠實限制：citations 端點只回傳前 `--limit` 筆（預設 15；DOI 輸入時走 OpenAlex、依 `--limit` 取筆數，S2 路徑單次最多抓 100 筆候選，詳見 api-notes.md），超高被引文獻的 diff 可能漏；新文獻被引數普遍為 0，判「突出」主要靠相關性而非引用數。

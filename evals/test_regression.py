@@ -1047,8 +1047,8 @@ def test_versions_review_fixes():
                              search={"title": [], "author": [raw_renamed]})
     author_urls = [u for u in urls if "query.author=" in u]
     sent = [urllib.parse.parse_qs(urllib.parse.urlparse(u).query).get("query.author") for u in author_urls]
-    check("CX-18r", "作者搜尋真的把第一作者姓氏送進 Crossref 的 query.author（S2 命中的路徑）",
-          exc is None and code == 0 and sent == [["chen"]]
+    check("CX-18r", "作者搜尋真的把第一、第二作者的姓氏依序送進 Crossref 的 query.author（S2 命中的路徑）",
+          exc is None and code == 0 and sent == [["chen"], ["okafor"]]
           and [p.get("doi") for p in d.get("possible_published_versions") or []] == ["10.1000/widget.2025.7"],
           f"exc={exc} exit={code} sent={sent}")
 
@@ -1105,6 +1105,8 @@ def test_versions_round3():
     n：「可能的正式版」整體依（作者重疊、題目相似）排序：自填 DOI 對不上的那筆不得佔第一格。
     o：網址形式的 DOI（https://doi.org/…）要被認成 DOI。
     p：只剩一個字母的作者名（「J.」）沒有鑑別力，作者重疊回 None 而不是 1.0。
+    （CX-20d／e 也放在這裡：d 第一、第二作者在發表時對調，只有第二作者的查詢找得到正式版；
+    e 一位作者的查詢失敗時，另一位的結果不丟、失敗如實回報。）
     不連網：http_get 只回應明確列出的端點，其餘記成外洩並讓案例失敗。"""
     import contextlib
     import io
@@ -1196,7 +1198,7 @@ def test_versions_round3():
                 "type": type_, "container": "Journal of Widget Research", "authors": list(authors)}
 
     def run(ident, s2=None, s2_pid=None, arxiv=(), by_title=(), by_author=(), works=None,
-            works_status=None, arxiv_down=False):
+            works_status=None, arxiv_down=False, author_map=None, author_log=None):
         works, works_status, leaked = works or {}, works_status or {}, []
 
         def fake_http_get(url, *a, **k):
@@ -1228,7 +1230,17 @@ def test_versions_round3():
         la3.http_get = fake_http_get
         la3.s2_get_paper = fake_s2
         la3.arxiv_query = fake_arxiv
-        la3.crossref_search = lambda t, rows=5, author=None: [dict(c) for c in (by_author if author else by_title)]
+        def fake_crossref_search(t, rows=5, author=None):
+            # author_map 給值時，依 query.author 的姓氏分別回結果（並依序記下被查過的姓氏）
+            if author and author_log is not None:
+                author_log.append(author)
+            if author and author_map is not None:
+                hit = author_map.get(author, [])
+                if isinstance(hit, Exception):
+                    raise hit
+                return [dict(c) for c in hit]
+            return [dict(c) for c in (by_author if author else by_title)]
+        la3.crossref_search = fake_crossref_search
         buf, code, exc = io.StringIO(), 0, None
         try:
             with contextlib.redirect_stdout(buf):
@@ -1341,6 +1353,224 @@ def test_versions_round3():
           and exc is None and code == 0 and d.get("version_link") == "input_doi_is_published",
           f"exc={exc} exit={code} link={d.get('version_link')!r}")
 
+    # CX-20d：預印本第一、第二作者在發表時對調——只查第一作者的姓氏會漏掉。標題搜尋查無、
+    # 第一作者的查詢也查無，只有第二作者的查詢帶得出改名後的正式版。
+    queried = []
+    code, exc, d = run("ARXIV:2410.01234", s2=w_s2, arxiv=[w_pre], by_title=[],
+                       author_map={"chen": [], "okafor": [cand("10.1000/widget.2025.7")]},
+                       author_log=queried)
+    got = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-20d", "第一作者的查詢查無、只有第二作者的查詢帶得出改名後的正式版時，仍列為可能的正式版",
+          exc is None and code == 0 and d.get("published_version") is None
+          and got == ["10.1000/widget.2025.7"] and queried == ["chen", "okafor"],
+          f"exc={exc} exit={code} found={got} queried={queried}")
+
+    # CX-20e：兩位作者各查一次，其中一位查詢失敗時，另一位已經拿到的結果不得丟掉；
+    # 但失敗也不得被吞掉——要記成查詢失敗（crossref_error）。
+    queried = []
+    code, exc, d = run("ARXIV:2410.01234", s2=w_s2, arxiv=[w_pre], by_title=[],
+                       author_map={"chen": urllib.error.URLError("模擬 Crossref 逾時"),
+                                   "okafor": [cand("10.1000/widget.2025.7")]},
+                       author_log=queried)
+    got = [p.get("doi") for p in d.get("possible_published_versions") or []]
+    check("CX-20e", "一位作者的查詢失敗時，另一位已拿到的結果不丟、失敗如實記成查詢失敗",
+          exc is None and got == ["10.1000/widget.2025.7"] and queried == ["chen", "okafor"]
+          and "逾時" in (d.get("crossref_error") or ""),
+          f"exc={exc} exit={code} found={got} queried={queried} crossref_error={d.get('crossref_error')!r}")
+
+
+def test_hygiene_cx20():
+    """CX-20a～c（2026-10-14 衛生三項：使用者看得到、而且會踩到的小地方）。
+    a：Semantic Scholar 第一次回 429 就要在 stderr 給可執行的指引（申請網址、.env 那一行、.env 讀取
+       順序），不是等重試全用完；重試次數與退避秒數不得因此改變；已有金鑰、非 S2 網址不印；最終的
+       錯誤 JSON 的 hint 也要帶同一份指引。
+    b：備份檔不出貨：打包器的過濾函式擋 .bak 檔與目錄（有邊界，.bake 不算）、.gitignore 有 *.bak／*.bak-*／*.bak.*、
+       zip_check 對路徑任一段含 .bak 的條目都當風險。
+    c：charrefs.docx 位元組可重現：連產生兩次完全相同、時間戳是寫死的常數、且與入庫的那份一致。
+    不連網：urlopen 與 sleep 都換成替身（還原在 finally），整個套件另有 NET-01 封網閘門。"""
+    import contextlib
+    import io
+    import shutil
+    import urllib.error
+    import urllib.request
+    import zipfile
+    la_path = os.path.join(SKILL, "scripts", "lit_api.py")
+    s2_url = "https://api.semanticscholar.org/graph/v1/paper/search?query=widgets"
+    page = "https://www.semanticscholar.org/product/api"
+    env_line = "S2_API_KEY=<your key>"
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": 1}'
+
+    def drive(outcomes, url=s2_url, call=None, argv=None):
+        """跑一次 http_get（或 main）：outcomes 依序是每次 urlopen 的結果（429 或 "ok"）。
+        回傳 (結果, 例外, urlopen 次數, sleep 秒數清單, stderr, stdout, 離開碼)。"""
+        spec = importlib.util.spec_from_file_location("la_cx20", la_path)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.load_dotenv = lambda: None           # main 會讀使用者真正的 .env，測試不得受它影響
+        calls, sleeps, it = [], [], iter(outcomes)
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            o = next(it)
+            if o in (429, 500):
+                raise urllib.error.HTTPError(req.full_url, o, "fixture", {}, None)
+            return FakeResp()
+
+        real_open, real_sleep, real_argv = urllib.request.urlopen, time.sleep, sys.argv
+        urllib.request.urlopen, time.sleep = fake_urlopen, sleeps.append
+        err, out, res, exc, code = io.StringIO(), io.StringIO(), None, None, 0
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                try:
+                    if argv is not None:
+                        sys.argv = ["lit_api.py"] + argv
+                        m.main()
+                    else:
+                        res = m.http_get(url)
+                except SystemExit as e:
+                    code = e.code
+                except Exception as e:
+                    exc = e
+        finally:
+            urllib.request.urlopen, time.sleep, sys.argv = real_open, real_sleep, real_argv
+        return res, exc, len(calls), sleeps, err.getvalue(), out.getvalue(), code
+
+    saved_key = os.environ.pop("S2_API_KEY", None)
+    try:
+        # a1：第一次 429、第二次成功——重試沒用完也要有指引，而且重試行為沒變（一次退避 6 秒）
+        res, exc, n, sleeps, err, _, _ = drive([429, "ok"])
+        a1 = (exc is None and res is not None and n == 2 and sleeps == [6]
+              and page in err and env_line in err and "~/.env" in err)
+        # a2：一直 429——照舊重試 4 次、退避 6/12/24、最後拋 HTTPError；指引只印一次不洗版
+        res, exc, n, sleeps, err, _, _ = drive([429, 429, 429, 429])
+        a2 = (isinstance(exc, urllib.error.HTTPError) and exc.code == 429 and n == 4
+              and sleeps == [6, 12, 24] and err.count(page) == 1 and env_line in err)
+        # a3：非 Semantic Scholar 的網址 429，或已設金鑰，都不印申請金鑰的指引（那是誤導）
+        _, _, _, _, err_cr, _, _ = drive([429, "ok"], url="https://api.crossref.org/works?query=x")
+        os.environ["S2_API_KEY"] = "dummy-test-key"
+        _, _, _, _, err_key, _, _ = drive([429, "ok"])
+        del os.environ["S2_API_KEY"]
+        a3 = page not in err_cr and env_line not in err_cr and page not in err_key
+        # a4：最終的錯誤 JSON（stdout）的 hint 也帶同一份指引
+        _, _, n4, _, _, out4, code4 = drive([429] * 12, argv=["search", "widgets"])
+        try:
+            hint = json.loads(out4).get("hint") or ""
+        except ValueError:
+            hint = ""
+        a4 = code4 == 1 and page in hint and env_line in hint and "~/.env" in hint and "60–120" in hint
+        check("CX-20a", "S2 第一次 429 就在 stderr 給可執行指引（申請網址＋.env 那一行＋讀取順序）；重試行為不變；"
+              "有金鑰或非 S2 網址不印；最終錯誤 JSON 的 hint 帶同一份指引",
+              a1 and a2 and a3 and a4,
+              f"第一次429={a1} 重試用完={a2} 不誤印={a3} 最終hint={a4}（exit={code4} calls={n4} hint={hint[:30]!r}）")
+
+        # f：反駁者抓到的三件——最終 hint 以前不看主機、不看金鑰，一律叫人去申請 S2 金鑰；
+        #    stderr 指引在最後一次嘗試仍說「會自動退避重試」，但接著就是 raise。
+        def hint_of(out):
+            try:
+                return json.loads(out).get("hint") or ""
+            except ValueError:
+                return ""
+        _, _, _, _, _, out_cr, code_cr = drive([429] * 12, argv=["crossref-doi", "10.1000/x"])
+        h_cr = hint_of(out_cr)
+        f1 = code_cr == 1 and page not in h_cr and env_line not in h_cr and "api.crossref.org" in h_cr
+        os.environ["S2_API_KEY"] = "dummy-test-key"
+        _, _, _, _, _, out_k, code_k = drive([429] * 12, argv=["search", "widgets"])
+        del os.environ["S2_API_KEY"]
+        h_k = hint_of(out_k)
+        f2 = code_k == 1 and page not in h_k and env_line not in h_k and "金鑰本身" in h_k
+        _, _, _, _, err_first, _, _ = drive([429, "ok"])
+        _, _, _, _, err_last, _, _ = drive([500, 500, 500, 429])   # 前三次 5xx 重試，最後一次才 429
+        f3 = ("會自動退避重試" in err_first and "重試已用完" not in err_first
+              and "重試已用完" in err_last and "會自動退避重試" not in err_last)
+        check("CX-20f", "429 的 hint 看主機與金鑰：Crossref 的 429 不叫人申請 S2 金鑰、已設金鑰的 S2 429 說是金鑰上限；"
+              "stderr 指引只在真的會重試時說會重試",
+              f1 and f2 and f3,
+              f"crossref={f1}（hint={h_cr[:40]!r}） 有金鑰={f2}（hint={h_k[:40]!r}） 重試措辭={f3}")
+    finally:
+        if saved_key is not None:
+            os.environ["S2_API_KEY"] = saved_key
+        else:
+            os.environ.pop("S2_API_KEY", None)
+
+    # b：備份檔不出貨
+    ps = load_module("package_skill_cx20", os.path.join(SKILL, "scripts", "package_skill.py"))
+    skipped = [ps.should_skip(n) for n in ("foo.py.bak-20261014", "x.bak", "lit_api.py.bak-c1",
+                                           "x.bak.py", "scripts.bak-20261014")]
+    kept = [ps.should_skip(n) for n in ("lit_api.py", "SKILL.md", "backup_notes.md", "charrefs.docx",
+                                        "notes.bake.md")]
+    # 檔案掃描路徑：備份目錄要整個剪掉，裡面檔名乾淨的 lit_api.py 不得溜進來
+    tree = tempfile.mkdtemp(prefix="cx20b-tree-")
+    try:
+        for rel in ("scripts/lit_api.py", "scripts.bak-20261014/lit_api.py", "notes.bake.md", "x.bak"):
+            p = os.path.join(tree, *rel.split("/"))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").write("x")
+        found = {os.path.relpath(p, tree).replace(os.sep, "/") for p in ps.scan_files(tree)}
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
+    dir_pruned = ("scripts/lit_api.py" in found and "notes.bake.md" in found
+                  and not any("scripts.bak" in p for p in found))
+    still = [ps.should_skip(n) for n in (".env", ".env.local", "x.pyc", ".DS_Store")]
+    gi_path = os.path.join(SKILL, ".gitignore")
+    gi_lines = ([ln.strip() for ln in open(gi_path, encoding="utf-8")] if os.path.isfile(gi_path) else [])
+    tmp = tempfile.mkdtemp(prefix="cx20b-")
+    try:
+        def zip_with(name, extra):
+            p = os.path.join(tmp, name)
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("lit-review/SKILL.md", "# clean\n")
+                for e in extra:
+                    z.writestr(e, "stale copy\n")
+            return p
+
+        def zc(p):
+            r = subprocess.run([PY, os.path.join(BASE, "zip_check.py"), p], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=60,
+                               env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+            return r.returncode, r.stdout or ""
+        code_bad, out_bad = zc(zip_with("bad.zip", ["lit-review/scripts/lit_api.py.bak-20261014"]))
+        code_baddir, _ = zc(zip_with("bad_dir.zip", ["lit-review/scripts.bak-20261014/lit_api.py"]))
+        code_bake, _ = zc(zip_with("bake.zip", ["lit-review/notes.bake.md"]))
+        code_ok, out_ok = zc(zip_with("ok.zip", []))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    gi_ok = all(x in gi_lines for x in ("*.bak", "*.bak-*", "*.bak.*")) and "*.bak*" not in gi_lines
+    check("CX-20b", "備份檔不出貨：打包過濾擋 .bak 檔與 .bak 目錄（有邊界：不誤擋 notes.bake.md、backup_notes.md）、"
+          ".gitignore 有 *.bak／*.bak-*／*.bak.*、zip_check 對 ZIP 內任何一段路徑含 .bak 回 exit 1，乾淨與 .bake 仍過",
+          all(skipped) and not any(kept) and all(still) and gi_ok and dir_pruned
+          and code_bad == 1 and ".bak" in out_bad and code_baddir == 1 and code_bake == 0 and code_ok == 0,
+          f"過濾擋下={skipped} 誤擋={kept} 原規則={still} gitignore={gi_ok} 目錄剪掉={dir_pruned} "
+          f"zip_check(含bak)={code_bad} (bak目錄)={code_baddir} (.bake)={code_bake} (乾淨)={code_ok}")
+
+    # c：fixture 位元組可重現
+    mf = load_module("make_fixtures_cx20", os.path.join(BASE, "make_fixtures.py"))
+    tmp = tempfile.mkdtemp(prefix="cx20c-")
+    try:
+        p1, p2 = os.path.join(tmp, "one.docx"), os.path.join(tmp, "two.docx")
+        mf.write_charrefs_docx(p1)
+        mf.write_charrefs_docx(p2)
+        b1, b2 = open(p1, "rb").read(), open(p2, "rb").read()
+        with zipfile.ZipFile(p1) as z:
+            stamps = {i.date_time for i in z.infolist()}
+            methods = {i.compress_type for i in z.infolist()}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    committed = fixture("charrefs.docx")
+    same_as_committed = os.path.isfile(committed) and open(committed, "rb").read() == b1
+    check("CX-20c", "charrefs.docx 位元組可重現：連產生兩次完全相同、時間戳寫死為 2026-01-01、不壓縮，且與入庫的那份一致",
+          b1 == b2 and stamps == {(2026, 1, 1, 0, 0, 0)} and methods == {zipfile.ZIP_STORED}
+          and same_as_committed,
+          f"兩次相同={b1 == b2} 時間戳={sorted(stamps)} 壓縮={sorted(methods)} 與入庫一致={same_as_committed}")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -1357,7 +1587,7 @@ def main():
               test_entity_decoding, test_chinese_punctuation,
               test_fulltext_boundary, test_output_hardening,
               test_versions_s2_absent, test_versions_published_lookup,
-              test_versions_review_fixes, test_versions_round3]
+              test_versions_review_fixes, test_versions_round3, test_hygiene_cx20]
     # 封網閘門。本套件宣稱「不連網」，但這句話以前只寫在 README：MED-05/06 一直真的在連
     # Semantic Scholar，直到有人手動封網重跑才看出來——一次性的檢查抓得到這一次，抓不到下一次。
     # 所以寫成閘門：本行程的對外連線一律攔下並記錄，跑完只要有一筆，NET-01 就失敗。

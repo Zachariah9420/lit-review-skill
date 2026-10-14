@@ -207,6 +207,60 @@ MUTATIONS = [
      '    return bool(re.match(r"^10\\.\\d{4,9}/\\S+", _clean_doi(ident)))',
      '    return bool(re.match(r"^10\\.\\d{4,9}/\\S+", ident))',
      ["CX-19o"]),
+    # CX-20a～e（2026-10-14 衛生四項）：每個防護一個突變。目標檔含 "/" 或以 "." 開頭時，路徑相對於樹根。
+    ("第一次 429 不印指引 → 使用者等完整輪重試才知道要申請金鑰", "lit_api.py",
+     '            if e.code == 429:\n                _warn_s2_429(url, will_retry=attempt < retries)\n',
+     '            if e.code == 429:\n                pass\n',
+     ["CX-20a"]),
+    ("最終錯誤 JSON 的 hint 不帶申請指引 → 只說「申請 key」不說去哪、怎麼放", "lit_api.py",
+     '放入 .env。" + S2_KEY_HINT)',
+     '放入 .env。")',
+     ["CX-20a"]),
+    ("打包過濾不擋 .bak → 備份檔進 ZIP", "package_skill.py",
+     '\n            or BAK_RE.search(basename) is not None)',
+     '\n            )',
+     ["CX-20b"]),
+    ("zip_check 不把 .bak 當風險 → 手動壓縮的 ZIP 帶著備份檔也放行", "evals/zip_check.py",
+     '    hits["含 .bak 備份檔"] = ["%s: 備份檔不該出貨" % n for n in bak_files]',
+     '    pass',
+     ["CX-20b"]),
+    ("拿掉 .gitignore 的 *.bak* → 備份檔可被 git add 進庫", ".gitignore",
+     '# 備份檔不入庫（也不進 ZIP）；有邊界，*.bake 這種合法檔名不受影響\n*.bak\n*.bak-*\n*.bak.*\n',
+     '',
+     ["CX-20b"]),
+    ("docx 時間戳改回現在時間 → 每重新產生一次位元組就不同、工作樹變髒", "evals/make_fixtures.py",
+     'zi = zipfile.ZipInfo(name, date_time=DOCX_DATE)',
+     'zi = zipfile.ZipInfo(name, date_time=__import__("time").localtime()[:6])',
+     ["CX-20c"]),
+    ("只查第一作者 → 第一、第二作者對調後發表的正式版找不到", "lit_api.py",
+     '            who = [surname(named[0])] + ([surname(named[1])] if len(named) > 1 else [])',
+     '            who = [surname(named[0])]',
+     ["CX-20d", "CX-18r"]),
+    ("一位作者查詢失敗就整批丟掉 → 另一位已拿到的結果也沒了", "lit_api.py",
+     '                    fetch_err = fetch_err or e',
+     '                    raise',
+     ["CX-20e"]),
+    # CX-20f／CX-20b 補強（2026-10-14 反駁者）：hint 要看主機與金鑰、重試措辭要誠實、.bak 目錄與邊界。
+    ("429 的 hint 不看主機與金鑰 → Crossref 的 429 也叫人去申請 S2 金鑰", "lit_api.py",
+     '            if _s2_429_seen and not os.environ.get("S2_API_KEY"):',
+     '            if True:',
+     ["CX-20f"]),
+    ("最後一次 429 仍說會重試 → 承諾程式不會做的事", "lit_api.py",
+     '    tail = "程式會自動退避重試。" if will_retry else "重試已用完，這次指令以 429 結束。"',
+     '    tail = "程式會自動退避重試。"',
+     ["CX-20f"]),
+    ("備份目錄不剪 → scripts.bak-20261014/ 整個進 ZIP", "package_skill.py",
+     '        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not should_skip(d)]',
+     '        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]',
+     ["CX-20b"]),
+    ("zip_check 只看最後一段路徑 → 備份目錄裡的檔案放行", "evals/zip_check.py",
+     'bak_files = [n for n in names if any(re.search(r"\\.bak(?:$|[-._])", seg) for seg in n.split("/"))]',
+     'bak_files = [n for n in names if re.search(r"\\.bak(?:$|[-._])", n.rsplit("/", 1)[-1])]',
+     ["CX-20b"]),
+    (".bak 沒有邊界 → notes.bake.md 被無聲丟掉", "package_skill.py",
+     'BAK_RE = re.compile(r"\\.bak(?:$|[-._])")',
+     'BAK_RE = re.compile(r"\\.bak")',
+     ["CX-20b"]),
 ]
 
 
@@ -240,7 +294,8 @@ def _run(root):
 
     weak = []
     for desc, fname, orig, mutant, expect in MUTATIONS:
-        target = os.path.join(root, "scripts", fname)
+        target = (os.path.join(root, fname) if ("/" in fname or fname.startswith("."))
+                  else os.path.join(root, "scripts", fname))
         bak = target + ".mutbak"
         shutil.copy(target, bak)
         try:

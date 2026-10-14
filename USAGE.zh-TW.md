@@ -89,11 +89,11 @@ git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit
 
 ## 金鑰設定(選配，但建議)
 
-不設金鑰就能用，但 Semantic Scholar 免費共享池尖峰時段會塞車(自動改走 OpenAlex 備援，結果照樣可信，只是排序略噪)。在**專案目錄**建 `.env`:
+不設金鑰就能用，但 Semantic Scholar 免費共享池尖峰時段會塞車。塞車時 `search` 與 `snowball`（DOI 輸入）會自動改走 OpenAlex 備援（結果照樣可信，只是排序略噪）；引用查核（`verify`／`verify-batch`，也就是 `check`）只查 Crossref 與 Semantic Scholar，**沒有** OpenAlex 備援——其中一個來源失敗時，判定會標成單源（`single_source_degraded`）；來源失敗又沒找到合理候選時標 `partial_failure`（查詢未完成，不是查無）。在**專案目錄**建 `.env`，或放一份 `~/.env` 當跨專案的全域備援（腳本先找目前目錄的 `.env`，再找家目錄的 `~/.env`）：
 
 ```
 S2_API_KEY=你的金鑰          # semanticscholar.org/product/api 免費申請，幾個工作天核發
-CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩
+CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩；fulltext 查 Unpaywall 也必須有這個 email，沒有就只剩 S2 的 OA 欄位
 ```
 
 **`.env` 千萬不要 commit 進 git**(本 repo 的 .gitignore 已擋)。
@@ -118,7 +118,7 @@ CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩
 - ⚠️ 部分支持：相關但你的措辭比證據強半格(最常見——例如文獻說「相關」你寫「導致」)。報告會告訴你「這篇撐得起哪半句」
 - ❌ 疑似不支持：主題對不上，引了會被抓
 - ❓ 無法判斷：無摘要可用(付費牆、出版社不給)。**這不是文獻有問題**，是自動查核的極限，附連結供人工
-- 🚫 查無此文獻：三個資料庫都找不到。注意報告措辭是「三庫皆查無」而非「捏造」——書籍章節、很新的文章都可能查不到
+- 🚫 查無此文獻：報告會列名實際查過的來源（`verify` 查的是 Crossref + Semantic Scholar）並寫「X + Y 皆查無」，不會籠統寫「三庫」，也不會說「捏造」——書籍章節、很新的文章都可能查不到
 
 **證據層級**(矩陣與深查報告會標):`[摘要]`、`[全文 p.X]`、`[書目]`、`[綜合判斷]`、`[❓]`——讓你知道每個判定有多可靠。
 
@@ -127,7 +127,7 @@ CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩
 ## 常見問題
 
 **Q：跑很慢？**
-無金鑰時 S2 限流，腳本在退避重試(正常)。申請免費金鑰可解；急用時結果會自動走 OpenAlex 備援。
+無金鑰時 S2 限流，腳本在退避重試(正常)。申請免費金鑰可解；急用時 `search`／`snowball` 會自動走 OpenAlex 備援（引用查核沒有這層備援）。
 
 **Q：中文文獻怎麼辦？**
 學術 API 幾乎不收中文文獻。環境有 Google Scholar 工具時會用原文標題盡力查(標「信心中等」)；查無或沒工具就列「需人工查核」。它不會拿英譯標題去英文庫硬配——那會產生錯誤配對。
