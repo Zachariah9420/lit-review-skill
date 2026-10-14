@@ -14,6 +14,9 @@
   TS-*  壓力測試(黑箱，6 agents / 38 案例，2026-07-30)
   CX-*  Codex 獨立原始碼審查(24 findings,2026-07-30)
   DR-*  設計文件 review v2 的 Phase 0 項目
+  I18N-* 英文輸出模式（LIT_LANG=en）：表的完整性、呼叫端契約、中文不變、英文無 CJK、語言解析、--lang、.env、打包
+
+本套件把 LIT_LANG 釘在 zh（main() 開頭）：殼層、cwd 或 ~/.env 裡的 LIT_LANG=en 不得讓既有案例變紅。
 """
 import argparse
 import importlib.util
@@ -50,11 +53,18 @@ def check(case_id, desc, ok, detail=""):
     RESULTS.append({"id": case_id, "desc": desc, "ok": bool(ok), "detail": detail})
 
 
-def run_cli(script, *args, stdin_json=None):
-    """跑 CLI，回 (exit_code, stdout, stderr)。"""
+def run_cli(script, *args, stdin_json=None, env=None, cwd=None):
+    """跑 CLI，回 (exit_code, stdout, stderr)。子行程繼承目前環境（含 main() 釘住的 LIT_LANG=zh）；
+    env 的鍵值覆蓋它，值為 None 代表刪掉該變數（I18N-* 用來測「未設」）。"""
+    e = dict(os.environ)
+    for k, v in (env or {}).items():
+        if v is None:
+            e.pop(k, None)
+        else:
+            e[k] = v
     p = subprocess.run([PY, os.path.join(SKILL, "scripts", script), *[str(a) for a in args]],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=60)
+                       timeout=60, env=e, cwd=cwd)
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
@@ -528,10 +538,16 @@ def test_retraction_fallback():
     fn = src[src.index("def cmd_retract"):src.index("def _load_entries")]
     check("PH-04", "retract 在 updates 無記錄時以標題搜尋補查",
           "title_search_fallback" in fn and "query.bibliographic" in fn)
-    check("PH-05", "標題搜尋發現的通知標為「未經關聯確認」而非直接紅色警示",
-          "未經 updates 關聯確認" in fn)
-    check("PH-06", "無記錄時附年代覆蓋警語（綠勾在舊文獻沒有證據力）",
-          "coverage_caveat" in fn and "2010" in fn)
+    # PH-05／06 以前在函式原始碼裡 grep 中文字串。文字搬進 MESSAGES 表之後，改驗兩件事：函式用的是這把鍵，
+    # 以及這把鍵在兩種語言裡都說了該說的話。（PH-06 以前只靠註解裡的「2010」就能過——一條空洞的測試。）
+    susp = la.MESSAGES["retract.status.suspected"]
+    check("PH-05", "標題搜尋發現的通知標為「未經關聯確認」而非直接紅色警示（zh／en 兩種措辭都要）",
+          '_T("retract.status.suspected")' in fn and susp["zh"].startswith("⚠️") and susp["en"].startswith("⚠️")
+          and "未經 updates 關聯確認" in susp["zh"] and "not confirmed" in susp["en"])
+    cav = la.MESSAGES["retract.coverage_caveat"]
+    check("PH-06", "無記錄時附年代覆蓋警語（綠勾在舊文獻沒有證據力）：鍵在函式裡、兩種語言都提 2010 與 Retraction Watch",
+          "coverage_caveat" in fn and '_T("retract.coverage_caveat")' in fn
+          and all("2010" in cav[k] and "Retraction Watch" in cav[k] for k in ("zh", "en")))
 
 
 def test_rate_limiter_concurrency():
@@ -625,8 +641,13 @@ def test_fulltext_boundary():
     """fulltext 不得暗示可繞過付費牆，且查無免費版時必須給機構取得途徑。"""
     src = open(os.path.join(SKILL, "scripts", "lit_api.py"), encoding="utf-8").read()
     fn = src[src.index("def cmd_fulltext"):src.index("def cmd_retract")]
-    check("FT-01", "fulltext 明確聲明不繞過付費牆", "不繞過付費牆" in fn)
-    check("FT-02", "查無免費版時提供機構取得途徑", "how_to_get" in fn and "圖書館" in fn)
+    # FT-01／02 以前 grep 函式原始碼裡的中文；文字搬進 MESSAGES 表之後改驗「用的是這把鍵」＋「鍵的兩種語言內容」。
+    note, lib = la.MESSAGES["fulltext.note"], la.MESSAGES["fulltext.how.library"]
+    check("FT-01", "fulltext 明確聲明不繞過付費牆（zh／en）",
+          '_T("fulltext.note")' in fn and "不繞過付費牆" in note["zh"] and "does not bypass" in note["en"])
+    check("FT-02", "查無免費版時提供機構取得途徑（zh／en）",
+          "how_to_get" in fn and '_T("fulltext.how.library")' in fn
+          and "圖書館" in lib["zh"] and "library" in lib["en"])
     check("FT-03", "Unpaywall 與備援來源不一致時明說差異", "source_discrepancy" in fn)
 
 
@@ -1528,6 +1549,10 @@ def test_hygiene_cx20():
             p = os.path.join(tmp, name)
             with zipfile.ZipFile(p, "w") as z:
                 z.writestr("lit-review/SKILL.md", "# clean\n")
+                # zip_check 也查必要檔（I18N-12）：這裡測的是 .bak，其餘必要檔放空殼，免得「乾淨」的 ZIP 因缺檔變紅
+                for r in _zip_check_required():
+                    if r != "SKILL.md":
+                        z.writestr("lit-review/" + r, "stub\n")
                 for e in extra:
                     z.writestr(e, "stale copy\n")
             return p
@@ -1572,7 +1597,1217 @@ def test_hygiene_cx20():
           f"兩次相同={b1 == b2} 時間戳={sorted(stamps)} 壓縮={sorted(methods)} 與入庫一致={same_as_committed}")
 
 
+# ─────────────────────────────────────────────────────────────
+# 7. 英文輸出模式（LIT_LANG=en）：I18N-*
+# ─────────────────────────────────────────────────────────────
+
+CJK_RE = re.compile(r"[　-〿㐀-鿿＀-￯]")
+EMOJI_RE = re.compile("✅|❌|❓|⚠️|🚨|🔒|🚫")
+TOKEN_RE = re.compile(r"[A-Za-z_]+_[A-Za-z_*.]+|\*_error")
+I18N_ALLOW_NAMES = {"HEADING_RE", "HEADING_LOOSE_RE", "CITE_SEPS", "CJK"}
+I18N_ALLOW_TEXT = ("^[^:",)          # cmd_retract 剝標題前綴的 regex：是輸入解析器，不是輸出
+MSG_FIELDS = {"note", "_note", "message", "recommendation", "confidence_note", "s2_note", "absence_note",
+              "single_source_degraded", "status", "coverage_caveat", "how_to_get", "hint", "quality_warnings",
+              "journal_doi_status", "label", "source_discrepancy", "citations_source", "unsupported_style_note",
+              "crossref_error", "s2_error", "arxiv_error", "downgrade_reasons", "derivative_item_risk"}
+
+
+def _ci():
+    return load_module("cite_integrity_i18n", os.path.join(SKILL, "scripts", "cite_integrity.py"))
+
+
+def _t(mod, lang, key, **kw):
+    """用指定語言取一條訊息；語言在每次呼叫時讀 os.environ，取完立刻還原成呼叫前的值。"""
+    saved = os.environ.get("LIT_LANG")
+    os.environ["LIT_LANG"] = lang
+    try:
+        return mod._T(key, **kw)
+    finally:
+        if saved is None:
+            os.environ.pop("LIT_LANG", None)
+        else:
+            os.environ["LIT_LANG"] = saved
+
+
+def _placeholders(tpl):
+    import string
+    try:
+        names = {f for _, f, _, _ in string.Formatter().parse(tpl) if f}
+    except ValueError:
+        return set()
+    return {n for n in names if re.fullmatch(r"[A-Za-z_]\w*", n)}   # 非識別字的 {…} 是字面文字（R4）
+
+
+def _stray_cjk_literals(path):
+    """設計文件附錄 A 的掃描器：docstring、允許清單與 MESSAGES 以外的任何含 CJK 字串常值。"""
+    import ast
+    src = open(path, encoding="utf-8").read()
+    tree = ast.parse(src)
+    skip = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body \
+           and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
+            skip.add(id(n.body[0].value))
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in I18N_ALLOW_NAMES | {"MESSAGES"}
+                                               for t in n.targets):
+            skip.update(id(c) for c in ast.walk(n))
+    return [(c.lineno, c.value[:40]) for c in ast.walk(tree)
+            if isinstance(c, ast.Constant) and isinstance(c.value, str) and id(c) not in skip
+            and CJK_RE.search(c.value) and not c.value.startswith(I18N_ALLOW_TEXT)]
+
+
+def _table_problems(messages):
+    probs = []
+    for key, entry in messages.items():
+        zh, en = entry.get("zh"), entry.get("en")
+        if not isinstance(zh, str) or not zh or not isinstance(en, str) or not en:
+            probs.append(f"{key}: zh/en 缺項或不是字串")
+            continue
+        if _placeholders(zh) != _placeholders(en):
+            probs.append(f"{key}: 佔位符不一致 zh={sorted(_placeholders(zh))} en={sorted(_placeholders(en))}")
+        if set(TOKEN_RE.findall(zh)) != set(TOKEN_RE.findall(en)):
+            probs.append(f"{key}: 識別字不一致 zh={sorted(set(TOKEN_RE.findall(zh)))} en={sorted(set(TOKEN_RE.findall(en)))}")
+        if EMOJI_RE.findall(zh) != EMOJI_RE.findall(en):
+            probs.append(f"{key}: emoji 不一致")
+        if ".status." in key or key.startswith("report.verdict."):
+            mz, me = EMOJI_RE.match(zh), EMOJI_RE.match(en)
+            if not (mz and me and mz.group() == me.group()):
+                probs.append(f"{key}: 狀態 emoji 前綴不同或不在開頭")
+        if CJK_RE.search(en):
+            probs.append(f"{key}: en 含 CJK／全形字元")
+        if any(ord(ch) >= 128 for ch in EMOJI_RE.sub("", en)):
+            probs.append(f"{key}: en 含 emoji 以外的非 ASCII 字元")
+        for lang, tpl in (("zh", zh), ("en", en)):
+            ph = _placeholders(tpl)
+            if ph:
+                try:
+                    tpl.format(**{n: "x" for n in ph})
+                except (KeyError, IndexError, ValueError) as e:
+                    probs.append(f"{key}: {lang} 模板無法 format（{e}）")
+    return probs
+
+
+def _callsite_problems(path, messages):
+    import ast
+    src = open(path, encoding="utf-8").read()
+    tree = ast.parse(src)
+    probs, used = [], set()
+
+    def calls(node):
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("_T", "_H"):
+                yield n
+
+    # _H 本身是 _T 的包裝（return _T(key).replace(...)），它裡面那一次呼叫的鍵是參數，不是字面值
+    wrapper = next((f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name == "_H"), None)
+    inside_wrapper = {id(n) for n in calls(wrapper)} if wrapper else set()
+    for n in calls(tree):
+        if id(n) in inside_wrapper:
+            continue
+        if not n.args or not isinstance(n.args[0], ast.Constant) or not isinstance(n.args[0].value, str):
+            probs.append(f"line {n.lineno}: 鍵不是字串字面值")
+            continue
+        key = n.args[0].value
+        used.add(key)
+        if key not in messages:
+            probs.append(f"line {n.lineno}: 鍵 {key!r} 不在表裡")
+            continue
+        if len(n.args) > 1 or any(k.arg is None for k in n.keywords):
+            probs.append(f"line {n.lineno}: {key} 用了位置參數或 **kwargs")
+        kw = {k.arg for k in n.keywords}
+        for lang in ("zh", "en"):
+            ph = _placeholders(messages[key][lang])
+            if kw != ph:
+                probs.append(f"line {n.lineno}: {key} 傳了 {sorted(kw)}，{lang} 模板要 {sorted(ph)}")
+    for key in sorted(set(messages) - used):
+        probs.append(f"表裡的 {key!r} 沒有任何呼叫端")
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for n in calls(stmt):
+            probs.append(f"line {n.lineno}: import 時就呼叫 _T/_H（.env 還沒讀）")
+    for ln, txt in _stray_cjk_literals(path):
+        probs.append(f"line {ln}: 表外殘留中文字串 {txt!r}")
+    return probs
+
+
+def _strip_msgs(obj, extra=()):
+    if isinstance(obj, dict):
+        return {k: _strip_msgs(v, extra) for k, v in obj.items() if k not in MSG_FIELDS and k not in extra}
+    if isinstance(obj, list):
+        return [_strip_msgs(v, extra) for v in obj]
+    return obj
+
+
+def _statuses(obj):
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "status" and isinstance(v, str):
+                out.append(v)
+            out += _statuses(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            out += _statuses(v)
+    return out
+
+
+def _capture(fn, *args):
+    """在行程內跑一個 cmd_*：回 (exit, stdout, stderr, exception)。"""
+    import contextlib
+    import io
+    out, err, code, exc = io.StringIO(), io.StringIO(), 0, None
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            fn(*args)
+        except SystemExit as e:
+            code = e.code
+        except Exception as e:
+            exc = f"{type(e).__name__}: {e}"
+    return code, out.getvalue(), err.getvalue(), exc
+
+
+def _both(fn, *args):
+    """同一個情境各跑一次 zh 與 en：回 ((exit, json, exc), (exit, json, exc))。語言只影響訊息欄位。"""
+    res = []
+    for lang in ("zh", "en"):
+        os.environ["LIT_LANG"] = lang
+        try:
+            code, out, _, exc = _capture(fn, *args)
+        finally:
+            os.environ["LIT_LANG"] = "zh"
+        s = out.strip()
+        d = json.loads(s) if s.startswith(("{", "[")) else None
+        res.append((code, d, exc, out))
+    return res
+
+
+def test_i18n_tables():
+    """I18N-01：兩支腳本的訊息表結構完整——zh/en 鍵集合、佔位符、識別字、emoji 一致；en 純 ASCII；模板可 format。"""
+    ci = _ci()
+    probs = [("lit_api", p) for p in _table_problems(la.MESSAGES)] + \
+            [("cite_integrity", p) for p in _table_problems(ci.MESSAGES)]
+    check("I18N-01", "訊息表：zh/en 同鍵同佔位符同識別字同 emoji、en 純 ASCII（emoji 除外）、狀態前綴一致、模板可 format",
+          not probs and len(la.MESSAGES) >= 117 and len(ci.MESSAGES) >= 21,
+          f"lit_api={len(la.MESSAGES)} cite={len(ci.MESSAGES)} 問題 {len(probs)}：{probs[:4]}")
+
+
+def test_i18n_callsites():
+    """I18N-02：呼叫端契約（AST）——鍵是字面值且在表裡、kwargs 等於佔位符、沒有沒人用的鍵、import 時不呼叫、
+    表外沒有殘留中文字串（設計文件附錄 A 的掃描器）。"""
+    ci = _ci()
+    probs = [("lit_api", p) for p in _callsite_problems(os.path.join(SKILL, "scripts", "lit_api.py"), la.MESSAGES)] + \
+            [("cite_integrity", p) for p in _callsite_problems(os.path.join(SKILL, "scripts", "cite_integrity.py"), ci.MESSAGES)]
+    check("I18N-02", "呼叫端契約：鍵為字面值且存在、kwargs＝佔位符、無未用鍵、無 import 時呼叫、表外無中文字串",
+          not probs, f"問題 {len(probs)}：{probs[:4]}")
+
+
+def test_i18n_zh_frozen():
+    """I18N-03：中文一個字都沒變——(1) 改動前掃描器列出的每個中文字串片段都還在 zh 表裡（evals/fixtures/zh_literals.json
+    是改動前那棵樹的快照）；(1b) 逐鍵金樣 evals/fixtures/zh_messages.json（{腳本: {鍵: zh}}）：金樣裡每把鍵都在表裡、
+    zh 一字不差，表裡每把鍵也都在金樣裡。片段檢查只問「這段字還在某處」，同一句話在兩把鍵各有一份時改掉其中一把照樣過；
+    逐鍵比對補這個洞。新增一把鍵卻沒同步更新金樣會在這裡大聲失敗——這是刻意的：中文輸出的任何增減，
+    都要有人在同一個 commit 裡明確寫進金樣；(2) LIT_LANG 未設／zh／zh-TW／ZH 的 stdout 位元組相同、stderr 為空。"""
+    ci = _ci()
+    golden = json.load(open(fixture("zh_literals.json"), encoding="utf-8"))
+    missing = []
+    for fname, table in (("lit_api.py", la.MESSAGES), ("cite_integrity.py", ci.MESSAGES)):
+        blob = "\n".join(v["zh"] for v in table.values())
+        for frag in golden[fname]:
+            for piece in re.split(r"%[sd]", frag):
+                # 「；另有來源查詢失敗（」那一條：分隔符依 R6 拆成 sep.clause，片段本身只差開頭的「；」
+                if piece and piece not in blob and piece.strip("；") not in blob:
+                    missing.append((fname, piece[:30]))
+    n_frag = sum(len(v) for k, v in golden.items() if not k.startswith("_"))
+    # (1b) 逐鍵：兩個方向都比。金樣是空的或少了某支腳本，表裡每把鍵都會被列成「金樣裡沒有」，不會悄悄變成零比對。
+    per_key = json.load(open(fixture("zh_messages.json"), encoding="utf-8"))
+    key_bad = []
+    for fname, table in (("lit_api.py", la.MESSAGES), ("cite_integrity.py", ci.MESSAGES)):
+        gold = per_key.get(fname) or {}
+        key_bad += [(fname, k, "zh 與金樣不同") for k, z in gold.items() if k in table and table[k].get("zh") != z]
+        key_bad += [(fname, k, "表裡沒有") for k in gold if k not in table]
+        key_bad += [(fname, k, "金樣裡沒有") for k in table if k not in gold]
+    n_keys = sum(len(v) for v in per_key.values() if isinstance(v, dict))
+    check("I18N-03a", f"改動前的 {n_frag} 個中文字串片段全部仍在 zh 表裡（金樣：fixtures/zh_literals.json），"
+          f"且 {n_keys} 把鍵的 zh 逐鍵與 fixtures/zh_messages.json 一字不差、兩邊鍵集合相同",
+          n_frag >= 150 and not missing and not key_bad,
+          f"片段缺 {len(missing)}：{missing[:4]}；逐鍵不符 {len(key_bad)}：{key_bad[:4]}")
+
+    # 子行程的 HOME／USERPROFILE 與 cwd 都指向空的暫存目錄（同 I18N-09）：開發者 ~/.env 或 ./.env 裡的
+    # LIT_LANG=en 會讓「未設」那一格讀成英文，這條就因為與程式無關的理由變紅。
+    import shutil
+    iso = tempfile.mkdtemp(prefix="i18n-zh-")
+    outs = {}
+    try:
+        home, cwd = os.path.join(iso, "home"), os.path.join(iso, "cwd")
+        os.makedirs(home)
+        os.makedirs(cwd)
+        for val in (None, "zh", "zh-TW", "ZH"):
+            env = {"LIT_LANG": val, "HOME": home, "USERPROFILE": home}
+            c1, o1, e1 = run_cli("lit_api.py", "verify", "--title", "   ", env=env, cwd=cwd)
+            c2, o2, e2 = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", env=env, cwd=cwd)
+            outs[val] = (c1, o1, e1, c2, o2, e2)
+    finally:
+        shutil.rmtree(iso, ignore_errors=True)
+    same = len({v for v in outs.values()}) == 1
+    quiet = all(not v[2] and not v[5] for v in outs.values())
+    check("I18N-03b", "LIT_LANG 未設／zh／zh-TW／ZH：stdout 位元組相同、離開碼相同、stderr 為空",
+          same and quiet, f"相同={same} 無警告={quiet}")
+
+
+def test_i18n_english_cli():
+    """I18N-04：LIT_LANG=en 時主要指令的離線路徑輸出英文——訊息欄位等於 _T 在 en 下的值，而且整份輸出不含 CJK
+    （輸入含中文的兩個案例只看訊息欄位，query 回顯的是使用者資料）。"""
+    ci = _ci()
+    en = {"LIT_LANG": "en"}
+
+    def js(out):
+        s = out.strip()
+        return json.loads(s) if s.startswith(("{", "[")) else {}
+
+    bad = []
+    c, o, _ = run_cli("lit_api.py", "verify", "--title", "   ", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("message") == _t(la, "en", "verify.empty_title") and not CJK_RE.search(o)):
+        bad.append(("verify.blank", o[:80]))
+    c, o, _ = run_cli("lit_api.py", "verify", "--title", "智慧型維修決策支援系統之研究", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("verdict_hint") == "unsupported_title"
+            and d.get("absence_note") == _t(la, "en", "verify.unsupported_title")):
+        bad.append(("verify.cjk", str(d.get("absence_note"))[:80]))
+    c, o, _ = run_cli("lit_api.py", "versions", "隨便什麼", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("error") == "UNSUPPORTED_IDENTIFIER"
+            and d.get("recommendation") == _t(la, "en", "versions.unsupported_identifier")):
+        bad.append(("versions.cjk", str(d.get("recommendation"))[:80]))
+    c, o, _ = run_cli("lit_api.py", "brief", fixture("not_json.txt"), env=en)
+    d = js(o)
+    if not (c == 1 and d.get("error") == "INVALID_INPUT"
+            and str(d.get("message")).startswith(_t(la, "en", "load.bad_json", err="")) and not CJK_RE.search(o)):
+        bad.append(("brief.not_json", o[:80]))
+    c, o, _ = run_cli("lit_api.py", "pick", fixture("two_works.json"), "99", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("message") == _t(la, "en", "common.index_out_of_range", bad=[99]) and not CJK_RE.search(o)):
+        bad.append(("pick.oob", o[:80]))
+    c, o, _ = run_cli("lit_api.py", "export-xml", "[", env=en)
+    d = js(o)
+    if not (c == 1 and str(d.get("message")).startswith(_t(la, "en", "export_xml.bad_inline_json", err=""))
+            and not CJK_RE.search(o)):
+        bad.append(("export_xml.bad", o[:80]))
+    c, o, _ = run_cli("lit_api.py", "export-xml", "[null]", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("message") == _t(la, "en", "export_xml.nothing_to_export") and not CJK_RE.search(o)):
+        bad.append(("export_xml.null", o[:80]))
+    tmp = tempfile.mkdtemp(prefix="i18n-")
+    try:
+        p = os.path.join(tmp, "empty.json")
+        open(p, "w").write("[]")
+        c, o, _ = run_cli("lit_api.py", "verify-batch", p, env=en)
+        d = js(o)
+        if not (c == 1 and d.get("message") == _t(la, "en", "batch.need_array") and not CJK_RE.search(o)):
+            bad.append(("verify-batch.empty", o[:80]))
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # cite_integrity：--json 與文字模式
+    c, o, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("unsupported_style_note") == _t(ci, "en", "note.no_numeric_apa", apa=2) and not CJK_RE.search(o)):
+        bad.append(("cite.apa.json", o[:80]))
+    c, o, _ = run_cli("cite_integrity.py", fixture("unnumbered_list.md"), "--json", env=en)
+    d = js(o)
+    if not (c == 1 and d.get("unsupported_style_note") == _t(ci, "en", "note.unparsable_list", n=3) and not CJK_RE.search(o)):
+        bad.append(("cite.unnumbered.json", o[:80]))
+    f = fixture("overcite.md")
+    c, o, _ = run_cli("cite_integrity.py", f, env=en)
+    lines = o.splitlines()
+    want = [_t(ci, "en", "report.file", file=f),
+            _t(ci, "en", "report.counts", cited=3, listed=10),
+            _t(ci, "en", "report.cited_not_listed", items=[100]),
+            _t(ci, "en", "report.listed_not_cited", items=[3, 4, 5, 6, 7, 8, 9, 10]),
+            _t(ci, "en", "report.dup_numbers", items=_t(ci, "en", "report.none")),
+            _t(ci, "en", "report.gaps", items=_t(ci, "en", "report.none")),
+            _t(ci, "en", "report.verdict", verdict=_t(ci, "en", "report.verdict.problems"))]
+    if not (c == 1 and lines == want and not CJK_RE.search(o)):
+        bad.append(("cite.overcite.text", lines[:3]))
+    f = fixture("heading_in_title.md")
+    c, o, _ = run_cli("cite_integrity.py", f, env=en)
+    if not (c == 0 and o.splitlines()[-1] == _t(ci, "en", "report.verdict", verdict=_t(ci, "en", "report.verdict.pass"))
+            and not CJK_RE.search(o)):
+        bad.append(("cite.pass.text", o[-80:]))
+    f = fixture("fake.docx")
+    c, o, _ = run_cli("cite_integrity.py", f, "--json", env=en)
+    d = js(o)
+    if not (c == 2 and d.get("message") == _t(ci, "en", "err.not_docx", path=f) and not CJK_RE.search(o)):
+        bad.append(("cite.fake.json", o[:80]))
+    c, o, _ = run_cli("cite_integrity.py", f, env=en)
+    if not (c == 2 and o.strip() == "❌ " + _t(ci, "en", "err.not_docx", path=f)):
+        bad.append(("cite.fake.text", o[:80]))
+    c, o, _ = run_cli("cite_integrity.py", fixture("no_such_file.docx"), "--json", env=en)
+    if not (c == 2 and js(o).get("error") == "INVALID_INPUT" and not CJK_RE.search(o)):
+        bad.append(("cite.missing", o[:80]))
+    check("I18N-04", "LIT_LANG=en：verify/versions/brief/pick/export-xml/verify-batch 與 cite_integrity（文字＋JSON）的離線輸出"
+          "全為英文，訊息欄位等於 _T 在 en 下的值，整份輸出不含 CJK",
+          not bad, f"不符 {len(bad)}：{bad[:3]}")
+
+
+def test_i18n_english_stubbed():
+    """I18N-05／06：需要假 HTTP 的路徑——versions、verify_one、decide_verdict、retract、fulltext、429 指引——在 en 下
+    訊息欄位等於 _T 的值且不含 CJK（05）；同一情境 zh 與 en 除了訊息欄位以外完全相同、離開碼相同、每個 status 的
+    開頭 emoji 相同（06）。不連網：http_get 一律換成替身。"""
+    import types
+    import urllib.error
+    spec = importlib.util.spec_from_file_location("la_i18n", os.path.join(SKILL, "scripts", "lit_api.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.load_dotenv = lambda: None
+    real_arxiv_query = m.arxiv_query
+
+    def http_err(url, code):
+        return urllib.error.HTTPError(url, code, "fixture", {}, None)
+
+    def no_net(*a, **k):
+        raise AssertionError("測試不得連網：http_get 被呼叫 %r" % (a[:1],))
+
+    def en(key, **kw):
+        return _t(m, "en", key, **kw)
+
+    bad5, bad6 = [], []
+
+    def pair(name, zh_r, en_r, extra=(), expect=None):
+        """zh_r/en_r = (exit, json, exc, raw)。expect：en 下必須成立的 (欄位路徑→值) 清單。"""
+        (cz, dz, xz, rz), (ce, de, xe, re_) = zh_r, en_r
+        if xz or xe or dz is None or de is None:
+            bad6.append((name, f"exc zh={xz} en={xe}"))
+            return
+        if cz != ce or _strip_msgs(dz, extra) != _strip_msgs(de, extra):
+            bad6.append((name, "訊息欄位以外有差異或離開碼不同"))
+        sz, se = _statuses(dz), _statuses(de)
+        if [EMOJI_RE.match(s).group() if EMOJI_RE.match(s) else None for s in sz] != \
+           [EMOJI_RE.match(s).group() if EMOJI_RE.match(s) else None for s in se]:
+            bad6.append((name, "status 的開頭 emoji 不同"))
+        if CJK_RE.search(re_):
+            bad5.append((name, "en 輸出含 CJK"))
+        for path, val in (expect or []):
+            cur = de
+            for k in path:
+                cur = cur[k] if isinstance(cur, (dict, list)) and (isinstance(k, int) or k in cur) else None
+            if cur != val:
+                bad5.append((name, f"{path}: {str(cur)[:60]!r} != {str(val)[:60]!r}"))
+
+    # ---- versions ----
+    title = "Neural Widget Alignment: A Contrastive Approach to Cross-Domain Widget Matching"
+    pre = {"title": title, "year": 2024, "authors": ["Alice Chen", "Bob Okafor"], "doi": None}
+    w_msg = {"title": ["Contrastive Cross-Domain Matching of Neural Widgets"], "DOI": "10.1000/widget.2025.7",
+             "type": "journal-article", "container-title": ["Journal of Widget Research"],
+             "issued": {"date-parts": [[2025]]},
+             "author": [{"family": "Chen", "given": "Alice"}, {"family": "Okafor", "given": "Bob"}]}
+
+    def vrun(ident, s2=None, arxiv=(), by_title=(), works=None, works_404=(), crossref_down=False, arxiv_down=False):
+        def fake_http_get(url, *a, **k):
+            if "api.crossref.org/works/" in url:
+                if crossref_down:
+                    raise urllib.error.URLError("simulated crossref timeout")
+                for doi in works_404:
+                    if url.endswith("/works/" + doi):
+                        raise http_err(url, 404)
+                for doi, msg in (works or {}).items():
+                    if url.endswith("/works/" + doi):
+                        return json.dumps({"message": msg})
+                raise http_err(url, 404)
+            return no_net(url)
+
+        def fake_s2(pid):
+            if s2 is None:
+                raise http_err("https://api.semanticscholar.org/graph/v1/paper/" + pid, 404)
+            return dict(s2)
+
+        def fake_arxiv(*a, **k):
+            if arxiv_down:
+                raise urllib.error.URLError("simulated arxiv timeout")
+            return [dict(e) for e in arxiv]
+
+        m.http_get, m.s2_get_paper, m.arxiv_query = fake_http_get, fake_s2, fake_arxiv
+        m.crossref_search = lambda t, rows=5, author=None: [] if author else [dict(c) for c in by_title]
+        return _both(m.cmd_versions, types.SimpleNamespace(id=ident))
+
+    zh_r, en_r = vrun("ARXIV:2410.01234", arxiv=[pre])
+    pair("versions.not_found_title_author", zh_r, en_r, expect=[
+        (("s2_note",), en("versions.s2_404_note")), (("recommendation",), en("versions.rec.not_found_title_author"))])
+    zh_r, en_r = vrun("ARXIV:2410.01234", arxiv=[dict(pre, authors=[])])
+    pair("versions.not_found_title", zh_r, en_r, expect=[(("recommendation",), en("versions.rec.not_found_title"))])
+    zh_r, en_r = vrun("ARXIV:2410.01234", arxiv=[])
+    pair("versions.arxiv_id_not_found", zh_r, en_r, expect=[
+        (("error",), "ARXIV_ID_NOT_FOUND"), (("recommendation",), en("versions.rec.arxiv_id_not_found"))])
+    if en_r[0] != 1:
+        bad5.append(("versions.arxiv_id_not_found", f"exit={en_r[0]}"))
+    zh_r, en_r = vrun("ARXIV:2410.01234", s2={"title": None, "year": 2024, "authors": [], "doi": None, "venue": None}, arxiv=[])
+    pair("versions.no_title", zh_r, en_r, expect=[(("recommendation",), en("versions.rec.no_title"))])
+    zh_r, en_r = vrun("DOI:10.1000/widget.2025.7", works={"10.1000/widget.2025.7": w_msg})
+    pv = (en_r[1] or {}).get("published_version") or {}
+    os.environ["LIT_LANG"] = "en"
+    try:
+        desc_en = m._describe(pv)
+    finally:
+        os.environ["LIT_LANG"] = "zh"
+    pair("versions.input_doi_is_published", zh_r, en_r, expect=[
+        (("version_link",), "input_doi_is_published"),
+        (("recommendation",), en("versions.rec.input_is_published", desc=desc_en))])
+    zh_r, en_r = vrun("ARXIV:2410.01234", arxiv=[dict(pre, doi="10.1000/missing.1")], works_404=["10.1000/missing.1"])
+    pair("versions.jdoi_not_found", zh_r, en_r, expect=[
+        (("arxiv_record", "journal_doi_status"), en("versions.jdoi.not_found")),
+        (("recommendation",), en("versions.rec.not_found_title_author") + en("versions.rec.suffix_jdoi_unused"))])
+    pub = {"source": "crossref", "title": title, "year": 2025, "doi": "10.1000/exact", "type": "journal-article",
+           "container": "J", "authors": ["Chen, Alice", "Okafor, Bob"]}
+    zh_r, en_r = vrun("ARXIV:2410.01234", s2=dict(pre, venue=None), arxiv_down=True, by_title=[pub])
+    pair("versions.published_arxiv_down", zh_r, en_r, expect=[
+        (("confidence",), "medium"),
+        (("confidence_note",), en("versions.note.title_inferred") + en("sep.clause")
+         + en("versions.note.errors_suffix", errs="arxiv_error"))])
+    zh_r, en_r = vrun("DOI:10.1000/some.paper", crossref_down=True)
+    pair("versions.incomplete", zh_r, en_r, expect=[(("recommendation",), en("versions.rec.incomplete"))])
+    if en_r[0] != 1:
+        bad5.append(("versions.incomplete", f"exit={en_r[0]}"))
+
+    # ---- verify_one（含逾時）與 decide_verdict／derivative_signals ----
+    s2_match = json.dumps({"data": [{"paperId": "fixture", "title": "Attention Is All You Need", "year": 2017,
+                                     "authors": [{"name": "Ashish Vaswani"}], "venue": "NIPS",
+                                     "externalIds": {"DOI": "10.5555/3295222"}}]})
+    s2_empty = json.dumps({"data": []})
+
+    def vone(crossref, s2_payload, title="Attention Is All You Need"):
+        def cs(*a, **k):
+            if isinstance(crossref, Exception):
+                raise crossref
+            return [dict(c) for c in crossref]
+
+        def hg(url, *a, **k):
+            if isinstance(s2_payload, Exception):
+                raise s2_payload
+            return s2_payload
+        m.crossref_search, m.http_get = cs, hg
+        return _both(m.cmd_verify, types.SimpleNamespace(title=title, authors="Vaswani, Ashish", year=2017))
+
+    zh_r, en_r = vone(OSError("simulated crossref outage"), s2_match)
+    pair("verify.single_source", zh_r, en_r, expect=[
+        (("single_source_degraded",), en("verify.single_source", providers="crossref_error"))])
+    zh_r, en_r = vone(OSError("simulated crossref outage"), OSError("simulated s2 outage"))
+    pair("verify.partial_failure", zh_r, en_r, expect=[
+        (("verdict_hint",), "partial_failure"),
+        (("absence_note",), en("verify.partial_failure", providers="crossref_error, s2_error"))])
+    zh_r, en_r = vone([], s2_empty)
+    pair("verify.not_found", zh_r, en_r, expect=[(("verdict_hint",), "not_found"), (("absence_note",), en("verify.not_found"))])
+    real_worst = m.HTTP_WORST_CASE
+    try:
+        m.HTTP_WORST_CASE = -10            # join 預算 0 秒：兩條供應者執行緒都還在睡，逾時路徑必走
+
+        def slow(*a, **k):
+            time.sleep(0.3)
+            return []
+        m.crossref_search, m.http_get = slow, lambda *a, **k: (time.sleep(0.3), s2_empty)[1]
+        zh_r, en_r = _both(m.cmd_verify, types.SimpleNamespace(title="Attention Is All You Need",
+                                                                 authors="Vaswani, Ashish", year=2017))
+        time.sleep(0.8)                    # 讓替身執行緒跑完再往下，免得它們之後才寫進字典
+    finally:
+        m.HTTP_WORST_CASE = real_worst
+    pair("verify.timeout", zh_r, en_r, expect=[(("crossref_error",), en("verify.timeout", sec=0))])
+
+    os.environ["LIT_LANG"] = "en"
+    try:
+        rev = {"title": "The Making of the English Working Class", "year": 1963,
+               "authors": ["H. McQueen", "E. P. Thompson"], "type": "journal-article", "page": "75"}
+        c = dict(rev, match=m.score_candidate(rev, rev["title"], ["Thompson"], 1961))
+        _, b = m.decide_verdict([c], year_supplied=True, authors_supplied=True, query_authors=["Thompson"])
+        reasons = (b or {}).get("downgrade_reasons") or []
+        want = [en("verdict.year_gap", yd=2), en("deriv.short_pages", span=1, page="75"),
+                en("deriv.first_author_other", first="H. McQueen")]
+        noauth = {"title": "Editorial", "year": None, "authors": []}
+        c2 = dict(noauth, match=m.score_candidate(noauth, "Editorial", ["Smith"], 2024))
+        _, b2 = m.decide_verdict([c2], year_supplied=True, authors_supplied=True)
+        want2 = [en("verdict.cand_no_authors"), en("verdict.cand_no_year")]
+        p1 = {"title": "Editorial", "year": 2020, "authors": ["A. One"], "doi": "10.1/a"}
+        p2 = {"title": "Editorial", "year": 2020, "authors": ["B. Two"], "doi": "10.2/b"}
+        cs_ = [dict(p, match=m.score_candidate(p, "Editorial", ["Wang"], 2020)) for p in (p1, p2)]
+        _, b3 = m.decide_verdict(m.rank_candidates(cs_), year_supplied=True, authors_supplied=True, query_authors=["Wang"])
+        want3 = [en("verdict.no_author_overlap"), en("verdict.ambiguous", gap=0.0)]
+        want4 = en("deriv.crossref_type", type="book-review")
+        got4 = m.derivative_signals({"type": "book-review", "page": "1-20", "authors": []})
+    finally:
+        os.environ["LIT_LANG"] = "zh"
+    if reasons != want:
+        bad5.append(("verdict.reasons", reasons))
+    if (b2 or {}).get("downgrade_reasons") != want2:
+        bad5.append(("verdict.no_data", (b2 or {}).get("downgrade_reasons")))
+    if (b3 or {}).get("downgrade_reasons") != want3:
+        bad5.append(("verdict.ambiguous", (b3 or {}).get("downgrade_reasons")))
+    if got4 != [want4]:
+        bad5.append(("deriv.crossref_type", got4))
+
+    # ---- retract：六種狀態 + coverage_caveat + _note ----
+    doi = "10.1056/nejm200011233432103"
+
+    def rhttp(updates_items, meta_title, cand_items, fail_fallback=False, fail_all=False):
+        def f(url, *a, **k):
+            if fail_all:
+                raise OSError("simulated crossref outage")
+            if "filter=updates" in url:
+                return json.dumps({"message": {"items": updates_items}})
+            if "/works/" in url:
+                if fail_fallback:
+                    raise OSError("simulated fallback outage")
+                return json.dumps({"message": {"title": [meta_title]}})
+            if "query.bibliographic" in url:
+                return json.dumps({"message": {"items": cand_items}})
+            return no_net(url)
+        return f
+
+    def rrun(*a, **k):
+        m.http_get = rhttp(*a, **k)
+        return _both(m.cmd_retract, types.SimpleNamespace(dois=[doi]))
+
+    t0 = "Comparison of Upper Gastrointestinal Toxicity"
+    zh_r, en_r = rrun([], t0, [])
+    pair("retract.clean", zh_r, en_r, expect=[((0, "status"), en("retract.status.clean")),
+                                             ((0, "coverage_caveat"), en("retract.coverage_caveat")),
+                                             ((1, "_note"), en("retract.note"))])
+    upd = [{"update-to": [{"DOI": doi, "type": "retraction", "label": "Retraction",
+                           "updated": {"date-parts": [[2020, 1, 1]]}}], "DOI": "10.1/n", "title": ["Retraction: X"]}]
+    zh_r, en_r = rrun(upd, t0, [])
+    pair("retract.retracted", zh_r, en_r, expect=[((0, "status"), en("retract.status.retracted"))])
+    corr = [{"update-to": [{"DOI": doi, "type": "correction", "label": "Correction",
+                            "updated": {"date-parts": [[2020, 1, 1]]}}], "DOI": "10.1/n", "title": ["Correction: X"]}]
+    zh_r, en_r = rrun(corr, t0, [])
+    pair("retract.corrected", zh_r, en_r, expect=[((0, "status"), en("retract.status.corrected"))])
+    zh_r, en_r = rrun([], t0, [{"title": ["Expression of Concern: " + t0], "DOI": "10.1/eoc",
+                                "issued": {"date-parts": [[2005, 12, 8]]}}])
+    pair("retract.suspected", zh_r, en_r, expect=[((0, "status"), en("retract.status.suspected")),
+                                                 ((0, "notices", 0, "label"), en("retract.label.title_search"))])
+    zh_r, en_r = rrun([], t0, [], fail_fallback=True)
+    pair("retract.incomplete", zh_r, en_r, expect=[((0, "status"), en("retract.status.incomplete"))])
+    if en_r[0] != 1 or zh_r[0] != 1:
+        bad6.append(("retract.incomplete", f"exit zh={zh_r[0]} en={en_r[0]}（❓ 狀態應回非零）"))
+    zh_r, en_r = rrun([], t0, [], fail_all=True)
+    pair("retract.failed", zh_r, en_r, extra=("error",), expect=[((0, "status"), en("retract.status.failed"))])
+    if en_r[0] != 1 or zh_r[0] != 1:
+        bad6.append(("retract.failed", f"exit zh={zh_r[0]} en={en_r[0]}"))
+
+    # ---- fulltext：三種狀態 + how_to_get + _note + 無 mailto 的 note ----
+    saved_mailto = os.environ.pop("CROSSREF_MAILTO", None)
+    try:
+        def frun(s2_pdf=None, s2_fail=False, unpaywall=None):
+            def sg(pid):
+                if s2_fail:
+                    raise OSError("simulated s2 outage")
+                return {"openAccessPdf": s2_pdf}
+            m.s2_get_paper = sg
+            m.http_get = (lambda url, *a, **k: json.dumps(unpaywall)) if unpaywall is not None else no_net
+            return _both(m.cmd_fulltext, types.SimpleNamespace(dois=["10.1/x"]))
+
+        zh_r, en_r = frun()
+        pair("fulltext.none", zh_r, en_r, expect=[
+            ((0, "note"), en("fulltext.need_mailto")), ((0, "status"), en("fulltext.status.none")),
+            ((0, "how_to_get"), [en("fulltext.how.publisher", doi="10.1/x"), en("fulltext.how.library"), en("fulltext.how.ill")]),
+            ((1, "_note"), en("fulltext.note"))])
+        zh_r, en_r = frun(s2_pdf="https://example.org/x.pdf")
+        pair("fulltext.ok", zh_r, en_r, expect=[((0, "status"), en("fulltext.status.ok"))])
+        zh_r, en_r = frun(s2_fail=True)
+        pair("fulltext.failed", zh_r, en_r, extra=("error",), expect=[
+            ((0, "status"), en("fulltext.status.failed")),
+            ((0, "error"), en("fulltext.s2_oa_failed", err="simulated s2 outage"))])
+        os.environ["CROSSREF_MAILTO"] = "test@example.org"
+        zh_r, en_r = frun(s2_pdf="https://repo.example.org/x.pdf",
+                          unpaywall={"is_oa": False, "oa_status": "closed", "oa_locations": []})
+        pair("fulltext.discrepancy", zh_r, en_r, expect=[((0, "source_discrepancy"), en("fulltext.source_discrepancy"))])
+    finally:
+        os.environ.pop("CROSSREF_MAILTO", None)
+        if saved_mailto is not None:
+            os.environ["CROSSREF_MAILTO"] = saved_mailto
+
+    # ---- search／arxiv 備援、snowball、verify-batch 混形狀 ----
+    def s2_429(url, *a, **k):
+        if "semanticscholar" in url:
+            raise http_err(url, 429)
+        return json.dumps({"results": [{"title": "W", "publication_year": 2020, "authorships": [], "doi": None,
+                                        "cited_by_count": 0, "primary_location": {"source": {
+                                            "display_name": "J", "type": "journal", "is_in_doaj": False, "is_core": False}}}]})
+    real_sleep = time.sleep
+    time.sleep = lambda s: None
+    try:
+        m.http_get = s2_429
+        zh_r, en_r = _both(m.cmd_search, types.SimpleNamespace(query="widgets", limit=1, year=None))
+    finally:
+        time.sleep = real_sleep
+    pair("search.fallback", zh_r, en_r, expect=[
+        (("note",), en("search.fallback_note")),
+        (("results", 0, "quality_warnings"), [en("quality.no_doi"), en("quality.zero_cites"), en("quality.venue_unindexed")])])
+    m.arxiv_query = real_arxiv_query       # 上面的 versions 情境換掉了它；這裡要讓真的 arxiv_query 去撞假的 http_get
+    m.http_get = lambda url, *a, **k: (_ for _ in ()).throw(OSError("down")) if "arxiv.org" in url else json.dumps({"data": []})
+    zh_r, en_r = _both(m.cmd_arxiv, types.SimpleNamespace(query="widgets", limit=1))
+    pair("arxiv.fallback", zh_r, en_r, expect=[(("note",), en("arxiv.fallback_note", err="down"))])
+    m.http_get = lambda url, *a, **k: (_ for _ in ()).throw(http_err(url, 404))
+    zh_r, en_r = _both(m.cmd_snowball, types.SimpleNamespace(id="S2:abc", direction="references", limit=5))
+    pair("snowball.not_found", zh_r, en_r, expect=[(("references", "hint"), en("snowball.not_found_hint"))])
+    tmp = tempfile.mkdtemp(prefix="i18n-batch-")
+    try:
+        p = os.path.join(tmp, "mixed.json")
+        open(p, "w").write('[{"title": "x"}, "just a string"]')
+        m.verify_one = lambda t, a, y: {"query": {"title": t}, "verdict_hint": "not_found"}
+        zh_r, en_r = _both(m.cmd_verify_batch, types.SimpleNamespace(file=p, workers=1))
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    pair("batch.mixed", zh_r, en_r, extra=("error",), expect=[
+        (("results", 1, "error"), en("batch.entry_not_object", n=2, type="str"))])
+
+    # ---- 429 指引（CX-20a 的英文孿生）與上游無法解析 ----
+    import contextlib
+    import io
+    import urllib.request
+    real_open, real_sleep, real_argv = urllib.request.urlopen, time.sleep, sys.argv
+
+    def drive(argv, urlopen, lang):
+        spec2 = importlib.util.spec_from_file_location("la_i18n_429", os.path.join(SKILL, "scripts", "lit_api.py"))
+        mm = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(mm)
+        mm.load_dotenv = lambda: None
+        err, out, code = io.StringIO(), io.StringIO(), 0
+        os.environ["LIT_LANG"] = lang
+        urllib.request.urlopen, time.sleep, sys.argv = urlopen, lambda s: None, ["lit_api.py"] + argv
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                try:
+                    mm.main()
+                except SystemExit as e:
+                    code = e.code
+        finally:
+            urllib.request.urlopen, time.sleep, sys.argv = real_open, real_sleep, real_argv
+            os.environ["LIT_LANG"] = "zh"
+        return code, out.getvalue(), err.getvalue()
+
+    saved_key = os.environ.pop("S2_API_KEY", None)
+    try:
+        def always_429(req, timeout=None):
+            raise http_err(req.full_url, 429)
+        cz, oz, ez = drive(["search", "widgets"], always_429, "zh")
+        ce, oe, ee = drive(["search", "widgets"], always_429, "en")
+        page, env_line = "https://www.semanticscholar.org/product/api", "S2_API_KEY=<your key>"
+        hz, he = json.loads(oz).get("hint", ""), json.loads(oe).get("hint", "")
+        ok429 = (cz == ce == 1 and page in ee and env_line in ee and "~/.env" in ee and not CJK_RE.search(ee)
+                 and ee.count(page) == 1 and he == en("cli.hint_429", hint=en("s2.key_hint", url=page))
+                 and "60-120" in he and not CJK_RE.search(oe)
+                 and _strip_msgs(json.loads(oz)) == _strip_msgs(json.loads(oe)))
+        if not ok429:
+            bad5.append(("hint_429", (ee[:60], he[:60])))
+        ce2, oe2, _ = drive(["crossref-doi", "10.1000/x"], always_429, "en")
+        he2 = json.loads(oe2).get("hint", "")
+        if not (ce2 == 1 and he2 == en("cli.hint_429_other", host="api.crossref.org") and not CJK_RE.search(oe2)):
+            bad5.append(("hint_429_other", he2[:60]))
+
+        class Html:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"<html>maintenance</html>"
+        ce3, oe3, _ = drive(["paper", "DOI:10.1/x"], lambda req, timeout=None: Html(), "en")
+        d3 = json.loads(oe3)
+        if not (ce3 == 1 and d3.get("error") == "UPSTREAM_UNPARSEABLE" and d3.get("note") == en("cli.unparseable_note")
+                and str(d3.get("message")).startswith(en("cli.unparseable_msg", err="")) and not CJK_RE.search(oe3)):
+            bad5.append(("unparseable", oe3[:80]))
+    finally:
+        if saved_key is not None:
+            os.environ["S2_API_KEY"] = saved_key
+
+    check("I18N-05", "LIT_LANG=en：versions／verify_one（含單源、未完成、查無、逾時）／降級理由／retract 六狀態／fulltext 三狀態／"
+          "備援 note／429 指引／上游無法解析，訊息欄位等於 _T 在 en 下的值、輸出不含 CJK",
+          not bad5, f"不符 {len(bad5)}：{bad5[:6]}")
+    check("I18N-06", "語言只改訊息欄位：同一情境 zh 與 en 去掉訊息欄位後 JSON 相同、離開碼相同、status 開頭 emoji 相同",
+          not bad6, f"不符 {len(bad6)}：{bad6[:6]}")
+
+
+def test_i18n_resolution():
+    """I18N-07：LIT_LANG 的解析矩陣——大小寫、地區後綴、空白都認；空值＝未設（不警告）；不認得的值退回 zh、
+    stdout 與 zh 完全相同、stderr 恰好一行 ASCII 警告、離開碼不變；同一行程只警告一次。"""
+    import contextlib
+    import io
+    i18n = la._i18n
+    table = {"": "zh", None: "zh", "zh": "zh", "zh-TW": "zh", "zh_tw": "zh", "ZH": "zh", "zh-Hant": "zh",
+             "en": "en", "EN": "en", "en-US": "en", "en_GB": "en", " en ": "en"}
+
+    def norm(v):
+        # 解析器拋例外也要算成「這一條錯」而不是讓整個套件函式炸掉：否則失敗會記在套件名下，
+        # 突變測試就對不到 I18N-07（第一次跑突變時就是這樣漏抓的）。
+        try:
+            return i18n.normalize(v)
+        except Exception as e:
+            return f"raised {type(e).__name__}"
+    wrong = [(v, norm(v)) for v, want in table.items() if norm(v) != (want, None)]
+    wrong += [(v, norm(v)) for v in ("fr", "klingon", "english", "1", "zhen") if norm(v) != ("zh", v)]
+    i18n._warned.clear()
+    err = io.StringIO()
+    os.environ["LIT_LANG"] = "fr"
+    try:
+        with contextlib.redirect_stderr(err):
+            try:
+                langs = [i18n.get_lang() for _ in range(3)]
+            except Exception as e:
+                langs = [f"raised {type(e).__name__}"]
+    finally:
+        os.environ["LIT_LANG"] = "zh"
+        i18n._warned.clear()
+    lines = err.getvalue().splitlines()
+    once = (langs == ["zh"] * 3 and len(lines) == 1 and "LIT_LANG" in lines[0] and "zh" in lines[0]
+            and all(ord(ch) < 128 for ch in lines[0]))
+
+    cz, oz, ez = run_cli("lit_api.py", "verify", "--title", "   ", env={"LIT_LANG": "zh"})
+    cb, ob, eb = run_cli("lit_api.py", "verify", "--title", "   ", env={"LIT_LANG": "fr"})
+    cz2, oz2, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), env={"LIT_LANG": "zh"})
+    cb2, ob2, eb2 = run_cli("cite_integrity.py", fixture("apa_style.md"), env={"LIT_LANG": "klingon"})
+    sub_ok = (cz == cb == 1 and oz == ob and not ez and len(eb.splitlines()) == 1 and "LIT_LANG" in eb
+              and all(ord(ch) < 128 for ch in eb)
+              and cz2 == cb2 and oz2 == ob2 and len(eb2.splitlines()) == 1 and "LIT_LANG" in eb2
+              and all(ord(ch) < 128 for ch in eb2))
+    check("I18N-07", "LIT_LANG 解析：別名／大小寫／地區後綴／空白都認、空值視為未設；不認得的值退回 zh、stdout 同 zh、"
+          "stderr 恰一行 ASCII 警告、離開碼不變、每個行程只警告一次（兩支腳本）",
+          not wrong and once and sub_ok,
+          f"矩陣錯誤={wrong[:3]} 只警告一次={once}（{lines[:2]}） 子行程={sub_ok}（stderr={eb[:60]!r} / {eb2[:60]!r}）")
+
+
+def test_i18n_flag():
+    """I18N-08：--lang 旗標——勝過環境變數、=X 寫法、子命令前後都認、無效值退回 zh 並警告（不是 argparse 錯誤）、
+    頂層 -h 列出它（子命令 -h 不變）；分開寫的空值（--lang ""）等於沒給旗標，環境變數的 LIT_LANG=en 照樣生效；
+    cite_integrity 同樣。"""
+    en_msg, zh_msg = _t(la, "en", "verify.empty_title"), _t(la, "zh", "verify.empty_title")
+
+    def msg(*args, env):
+        c, o, e = run_cli("lit_api.py", *args, env=env)
+        try:
+            return c, json.loads(o).get("message"), e
+        except ValueError:
+            return c, o[:60], e
+    r1 = msg("--lang", "en", "verify", "--title", "   ", env={"LIT_LANG": "zh"})
+    r2 = msg("--lang", "zh", "verify", "--title", "   ", env={"LIT_LANG": "en"})
+    r3 = msg("--lang=en", "verify", "--title", "   ", env={"LIT_LANG": None})
+    r4 = msg("verify", "--title", "   ", "--lang", "en", env={"LIT_LANG": None})
+    r5 = msg("verify", "--title", "   ", "--lang=en", env={"LIT_LANG": "zh"})
+    r6 = msg("--lang", "fr", "verify", "--title", "   ", env={"LIT_LANG": None})
+    # 分開寫的空值：pop_lang_arg 照樣吃掉兩個 argv，但不寫 LIT_LANG（寫進空字串會把環境變數的 en 蓋成 zh）
+    r7 = msg("--lang", "", "verify", "--title", "   ", env={"LIT_LANG": "en"})
+    flag_ok = (r1[:2] == (1, en_msg) and r2[:2] == (1, zh_msg) and r3[:2] == (1, en_msg) and r4[:2] == (1, en_msg)
+               and r5[:2] == (1, en_msg) and r6[:2] == (1, zh_msg) and "LIT_LANG" in r6[2]
+               and r7[:2] == (1, en_msg)
+               and "usage" not in r6[2] and all(not r[2] for r in (r1, r2, r3, r4, r5, r7)))
+    ch, oh, _ = run_cli("lit_api.py", "-h", env={"LIT_LANG": "zh"})
+    cs, os_, _ = run_cli("lit_api.py", "verify", "-h", env={"LIT_LANG": "zh"})
+    help_ok = ch == 0 and "--lang" in oh and cs == 0 and "--lang" not in os_
+    ci = _ci()
+    en_note = _t(ci, "en", "note.no_numeric_apa", apa=2)
+    c1, o1, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", "--lang", "en", env={"LIT_LANG": "zh"})
+    c2, o2, _ = run_cli("cite_integrity.py", "--lang=en", fixture("apa_style.md"), "--json", env={"LIT_LANG": "zh"})
+    c3, o3, _ = run_cli("cite_integrity.py", "-h", env={"LIT_LANG": "zh"})
+    c4, o4, e4 = run_cli("cite_integrity.py", "--lang", "", fixture("apa_style.md"), "--json", env={"LIT_LANG": "en"})
+    try:
+        note4 = json.loads(o4).get("unsupported_style_note")
+    except ValueError:
+        note4 = o4[:60]
+    ci_ok = (c1 == 1 and json.loads(o1).get("unsupported_style_note") == en_note
+             and c2 == 1 and json.loads(o2).get("unsupported_style_note") == en_note
+             and c3 == 0 and "--lang" in o3
+             and c4 == 1 and note4 == en_note and not e4)
+    check("I18N-08", "--lang：勝過 LIT_LANG、--lang=X、子命令前後皆可、無效值退回 zh 並警告而非 argparse 錯誤、"
+          "頂層 -h 列出而子命令 -h 不變、--lang \"\"（分開寫的空值）等於沒給旗標；cite_integrity 同樣",
+          flag_ok and help_ok and ci_ok,
+          f"旗標={flag_ok}（{[r[:2] for r in (r1, r2, r3, r4, r5, r6, r7)]}） 說明={help_ok} cite={ci_ok}"
+          f"（--lang \"\"：{c4} {str(note4)[:30]!r}）")
+
+
+def test_i18n_dotenv():
+    """I18N-09：.env——cwd 的 .env 寫 LIT_LANG=en 對兩支腳本都生效（BOM、引號、註解都吃）；真的環境變數勝過 .env；
+    cwd 沒有就退到 ~/.env；空值 LIT_LANG= 視為未設。子行程的 HOME／USERPROFILE 指向空的暫存目錄，開發者真正的 ~/.env 插不進來。
+    空值規則只限 LIT_LANG：其他鍵維持「已設就不覆蓋」——殼層的 S2_API_KEY="" 不被 cwd .env 的值補上
+    （行程內呼叫 la.load_dotenv，cwd 與 HOME／USERPROFILE 都指向暫存目錄，跑完還原）。
+    文件範例也是閘門：四份文件（README／USAGE，中英）裡含 S2_API_KEY= 與 LIT_LANG= 的 .env 範例區塊原樣載入——
+    load_dotenv 不剝行尾註解，註解接在值後面會讓 LIT_LANG 變成 "en   # …"，所以範例的註解必須獨佔一行。"""
+    import shutil
+    en_msg, zh_msg = _t(la, "en", "verify.empty_title"), _t(la, "zh", "verify.empty_title")
+    ci = _ci()
+    en_note = _t(ci, "en", "note.no_numeric_apa", apa=2)
+    root = tempfile.mkdtemp(prefix="i18n-env-")
+    try:
+        cwd_env, home_a, home_b, home_c, cwd_empty = [os.path.join(root, n) for n in ("cwd", "home_a", "home_b", "home_c", "empty")]
+        for d in (cwd_env, home_a, home_b, home_c, cwd_empty):
+            os.makedirs(d)
+        with open(os.path.join(cwd_env, ".env"), "w", encoding="utf-8-sig") as f:
+            f.write("# comment line\n\nS2_API_KEY = 'not-a-real-key'\nLIT_LANG = \"en\"\n")
+        with open(os.path.join(home_b, ".env"), "w", encoding="utf-8") as f:
+            f.write("LIT_LANG=en\n")
+        with open(os.path.join(home_c, ".env"), "w", encoding="utf-8") as f:
+            f.write("LIT_LANG=\n")
+
+        def env(home, lit=None):
+            return {"LIT_LANG": lit, "HOME": home, "USERPROFILE": home, "S2_API_KEY": None}
+
+        def msg(o):
+            try:
+                return json.loads(o).get("message")
+            except ValueError:
+                return o[:60]
+
+        def note(o):
+            try:
+                return json.loads(o).get("unsupported_style_note")
+            except ValueError:
+                return o[:60]
+        c1, o1, e1 = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_a), cwd=cwd_env)
+        c2, o2, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", env=env(home_a), cwd=cwd_env)
+        c3, o3, _ = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_a, "zh"), cwd=cwd_env)
+        c4, o4, _ = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_b), cwd=cwd_empty)
+        c5, o5, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", env=env(home_b), cwd=cwd_empty)
+        c6, o6, e6 = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_c), cwd=cwd_empty)
+        c7, o7, _ = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_a), cwd=cwd_empty)
+        # 空值等於未設：殼層的 LIT_LANG=""（POSIX 的 export LIT_LANG=）擋不住 cwd 的 .env；
+        # --lang= 空值等於沒給旗標，環境變數的 LIT_LANG=en 照樣生效。兩支腳本都要。
+        c8, o8, e8 = run_cli("lit_api.py", "verify", "--title", "   ", env=env(home_a, ""), cwd=cwd_env)
+        c9, o9, _ = run_cli("cite_integrity.py", fixture("apa_style.md"), "--json", env=env(home_a, ""), cwd=cwd_env)
+        c10, o10, e10 = run_cli("lit_api.py", "--lang=", "verify", "--title", "   ", env=env(home_a, "en"),
+                                cwd=cwd_empty)
+        c11, o11, _ = run_cli("cite_integrity.py", "--lang=", fixture("apa_style.md"), "--json", env=env(home_a, "en"),
+                              cwd=cwd_empty)
+        empty_ok = (msg(o8) == en_msg and not e8 and note(o9) == en_note and msg(o10) == en_msg and not e10
+                    and note(o11) == en_note and c8 == c10 == 1 and c9 == c11 == 1)
+        # 空值規則只限 LIT_LANG：其他鍵維持「已設就不覆蓋」（與 b0db1e0 相同）。殼層 S2_API_KEY="" 算已設，
+        # cwd .env 的 S2_API_KEY 不得補進來；殼層沒設的 CROSSREF_MAILTO 照樣從同一份 .env 讀進來——
+        # 證明 .env 真的讀過，空字串不是因為 load_dotenv 空轉才留著。行程內呼叫，cwd 與 HOME 都隔離、跑完還原。
+        pin_cwd = os.path.join(root, "pin")
+        os.makedirs(pin_cwd)
+        with open(os.path.join(pin_cwd, ".env"), "w", encoding="utf-8") as f:
+            f.write("S2_API_KEY=fromdotenv\nCROSSREF_MAILTO=fromdotenv\n")
+        saved = {k: os.environ.get(k) for k in ("S2_API_KEY", "CROSSREF_MAILTO", "HOME", "USERPROFILE")}
+        old_cwd = os.getcwd()
+        try:
+            os.environ.update({"S2_API_KEY": "", "HOME": home_a, "USERPROFILE": home_a})
+            os.environ.pop("CROSSREF_MAILTO", None)
+            os.chdir(pin_cwd)
+            la.load_dotenv()
+            pin = (os.environ.get("S2_API_KEY"), os.environ.get("CROSSREF_MAILTO"))
+        except Exception as e:
+            pin = f"raised {type(e).__name__}: {e}"
+        finally:
+            os.chdir(old_cwd)
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        pin_ok = pin == ("", "fromdotenv")
+        # 文件範例即閘門：四份文件各自含 S2_API_KEY= 與 LIT_LANG= 的 ``` 區塊，原樣寫成 .env 載入。load_dotenv 不剝
+        # 行尾註解（只剝頭尾空白與一層引號），範例若把註解接在值後面，LIT_LANG 會變成 "en   # optional…"（被當成不支援的
+        # 語言、輸出退回中文），金鑰也帶雜訊，所以註解必須獨佔一行。行程內呼叫，cwd 與 HOME／USERPROFILE 都指向空的暫存
+        # 目錄，LIT_LANG／S2_API_KEY／CROSSREF_MAILTO 先移除，跑完還原。
+        doc_home = os.path.join(root, "doc_home")
+        os.makedirs(doc_home)
+
+        def load_doc_env(doc_cwd):
+            keys = ("LIT_LANG", "S2_API_KEY", "CROSSREF_MAILTO", "HOME", "USERPROFILE")
+            saved_env = {k: os.environ.get(k) for k in keys}
+            cwd_before = os.getcwd()
+            try:
+                for k in ("LIT_LANG", "S2_API_KEY", "CROSSREF_MAILTO"):
+                    os.environ.pop(k, None)
+                os.environ.update({"HOME": doc_home, "USERPROFILE": doc_home})
+                os.chdir(doc_cwd)
+                la.load_dotenv()
+                return {k: os.environ.get(k) for k in ("LIT_LANG", "S2_API_KEY", "CROSSREF_MAILTO")}
+            except Exception as e:
+                return f"raised {type(e).__name__}: {e}"
+            finally:
+                os.chdir(cwd_before)
+                for k, v in saved_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+        doc_res = {}
+        for doc in ("README.md", "README.zh-TW.md", "USAGE.md", "USAGE.zh-TW.md"):
+            with open(os.path.join(SKILL, doc), "rb") as f:
+                doc_lines = f.read().decode("utf-8").replace("\r\n", "\n").split("\n")
+            blocks, cur = [], None
+            for ln in doc_lines:
+                if ln.startswith("```"):
+                    if cur is None:
+                        cur = []
+                    else:
+                        blocks.append("\n".join(cur))
+                        cur = None
+                elif cur is not None:
+                    cur.append(ln)
+            hits = [b for b in blocks if "S2_API_KEY=" in b and "LIT_LANG=" in b]
+            if len(hits) != 1:
+                doc_res[doc] = f"含兩個鍵的 ``` 區塊有 {len(hits)} 個（應為 1）"
+                continue
+            doc_cwd = os.path.join(root, "doc_" + doc.replace(".", "_"))
+            os.makedirs(doc_cwd)
+            with open(os.path.join(doc_cwd, ".env"), "w", encoding="utf-8") as f:
+                f.write(hits[0] + "\n")
+            got = load_doc_env(doc_cwd)
+            if not isinstance(got, dict):
+                doc_res[doc] = got
+            elif got["LIT_LANG"] != "en":
+                doc_res[doc] = f"LIT_LANG={got['LIT_LANG']!r}（應為 'en'）"
+            elif any(got[k] is None or "#" in got[k] for k in ("S2_API_KEY", "CROSSREF_MAILTO")):
+                doc_res[doc] = (f"S2_API_KEY={got['S2_API_KEY']!r} CROSSREF_MAILTO={got['CROSSREF_MAILTO']!r}"
+                                "（不得缺、不得含 #）")
+            else:
+                doc_res[doc] = "ok"
+        doc_ok = len(doc_res) == 4 and all(v == "ok" for v in doc_res.values())
+        doc_detail = "；".join(f"{d}:{r}" for d, r in doc_res.items())
+        ok = (msg(o1) == en_msg and not e1 and json.loads(o2).get("unsupported_style_note") == en_note
+              and msg(o3) == zh_msg and msg(o4) == en_msg
+              and json.loads(o5).get("unsupported_style_note") == en_note
+              and msg(o6) == zh_msg and not e6 and msg(o7) == zh_msg
+              and c1 == c3 == c4 == c6 == c7 == 1 and c2 == c5 == 1)
+        check("I18N-09", ".env：cwd 的 LIT_LANG=en（BOM／引號／註解）對 lit_api 與 cite_integrity 都生效；環境變數勝過 .env；"
+              "cwd 沒有就退到 ~/.env；LIT_LANG= 空值視為未設且不警告；都沒有就是 zh；"
+              "殼層的 LIT_LANG=\"\" 擋不住 .env、--lang= 等於沒給旗標（兩支腳本）；空值規則只限 LIT_LANG："
+              "殼層的 S2_API_KEY=\"\" 仍算已設、不被 .env 補上；"
+              "四份文件的 .env 範例原樣載入：LIT_LANG=en 生效、金鑰與信箱不帶 #（行尾註解不被剝除，範例註解不得接在值後面）",
+              ok and empty_ok and pin_ok and doc_ok,
+              f"cwd.env={msg(o1)!r}/{str(json.loads(o2).get('unsupported_style_note'))[:20]!r} env>file={msg(o3)!r} "
+              f"home={msg(o4)!r} empty={msg(o6)!r}（stderr={e6[:40]!r}） none={msg(o7)!r} "
+              f"空值不擋={empty_ok}（{msg(o8)!r}/{str(note(o9))[:20]!r}/{msg(o10)!r}/{str(note(o11))[:20]!r}）"
+              f" 其他鍵不補={pin_ok}（{pin!r}）"
+              f" 文件範例={doc_ok}（{doc_detail}）")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_i18n_help():
+    """I18N-10：LIT_LANG=en 時頂層與 15 個子命令的 -h、以及 cite_integrity 的 -h 都離開碼 0、非空、不含 CJK、
+    而且真的是英文說明（含該子命令的 en help 字串）。在行程內跑 main()，不開子行程。"""
+    import contextlib
+    import io
+    spec = importlib.util.spec_from_file_location("la_i18n_help", os.path.join(SKILL, "scripts", "lit_api.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.load_dotenv = lambda: None
+    ci = _ci()
+    ci.load_dotenv = lambda: None
+    # 子命令自己的 -h 只印它的參數說明（不印頂層列表裡那句 help=），所以對照的是參數的那把鍵
+    cmds = {"search": "help.search.year", "arxiv": None, "snowball": None, "verify": "help.verify.authors",
+            "verify-batch": "help.verify_batch.workers", "paper": None, "batch": "help.batch.ids",
+            "export-xml": "help.export_xml.file", "versions": "help.versions.id", "fulltext": "help.fulltext.dois",
+            "retract": "help.retract.dois", "brief": None, "pick": None, "crossref-doi": None, "export": None}
+
+    def squash(s):
+        return " ".join(s.split())      # argparse 依終端寬度換行，比對時把空白壓平
+
+    def helptext(mod, argv):
+        out, err, code = io.StringIO(), io.StringIO(), None
+        real_argv = sys.argv
+        sys.argv = ["x.py"] + argv
+        os.environ["LIT_LANG"] = "en"
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    mod.main()
+                except SystemExit as e:
+                    code = e.code
+        finally:
+            sys.argv = real_argv
+            os.environ["LIT_LANG"] = "zh"
+        return code, out.getvalue(), err.getvalue()
+
+    bad = []
+    code, out, err = helptext(m, ["-h"])
+    if not (code == 0 and out and not CJK_RE.search(out) and "--lang" in out
+            and squash(_t(m, "en", "help.verify")) in squash(out) and "Sub-commands" in out):
+        bad.append(("top", (code, out[:60], err[:60])))
+    for c, key in cmds.items():
+        code, out, err = helptext(m, [c, "-h"])
+        want = squash(_t(m, "en", key)) if key else ""
+        if not (code == 0 and out and not CJK_RE.search(out) and (want in squash(out))):
+            bad.append((c, (code, out[:60], err[:60])))
+    code, out, err = helptext(ci, ["-h"])
+    if not (code == 0 and out and not CJK_RE.search(out) and squash(_t(ci, "en", "help.lang")) in squash(out)):
+        bad.append(("cite", (code, out[:60], err[:60])))
+    check("I18N-10", "LIT_LANG=en：頂層＋15 個子命令＋cite_integrity 的 -h 都離開碼 0、不含 CJK、含英文說明、沒有 % 展開錯誤",
+          not bad, f"不符 {len(bad)}：{bad[:3]}")
+
+
+def test_i18n_translator():
+    """I18N-11：_T 永不拋例外——未知鍵回可見標記、缺 kwarg／多 kwarg／值含 {}% 都安全、en 缺項退回 zh、
+    _H 把 % 加倍、語言每次呼叫時讀（同一行程改 os.environ 就翻）。"""
+    i18n = la._i18n
+    T = i18n.make_translator({"k": {"zh": "中 {a}", "en": "E {a}"}, "z": {"zh": "只有中文"},
+                              "lit": {"zh": "字面 {x} 100%", "en": "lit {x} 100%"}})
+    os.environ["LIT_LANG"] = "en"
+    try:
+        r = [T("nope"), T("k"), T("k", a=1, b=2), T("k", a="{x} %s {"), T("z"), T("lit"), T("lit", x=1)]
+    finally:
+        os.environ["LIT_LANG"] = "zh"
+    safe = r == ["[nope]", "E {a}", "E 1", "E {x} %s {", "只有中文", "lit {x} 100%", "lit 1 100%"]
+    la.MESSAGES["_test.pct"] = {"zh": "100% 中", "en": "100% en"}
+    try:
+        h = la._H("_test.pct")
+    finally:
+        del la.MESSAGES["_test.pct"]
+    flip = []
+    for lang in ("zh", "en", "zh"):
+        os.environ["LIT_LANG"] = lang
+        flip.append(la._T("verify.empty_title"))
+    os.environ["LIT_LANG"] = "zh"
+    per_call = flip == [la.MESSAGES["verify.empty_title"]["zh"], la.MESSAGES["verify.empty_title"]["en"],
+                        la.MESSAGES["verify.empty_title"]["zh"]]
+
+    # 宿主行程已經有別的 _i18n 模組（誘餌：沒有 load_dotenv）時，兩支腳本照樣載得起來、共用同一份機制，
+    # 而且載入不改 sys.path。以前是 sys.path.insert + import _i18n：拿到誘餌（ImportError），還改了宿主的搜尋路徑。
+    # 例外一律收成這一條的失敗，不讓它炸成套件層級的失敗（突變測試要對得到 I18N-11）。
+    import types
+    scripts_dir = os.path.normcase(os.path.abspath(os.path.join(SKILL, "scripts")))
+    saved_path = list(sys.path)
+    saved_mods = {n: sys.modules.get(n) for n in ("_i18n", "lit_review_i18n")}
+    try:
+        sys.modules["_i18n"] = types.ModuleType("_i18n")
+        sys.modules.pop("lit_review_i18n", None)       # 走一次「宿主從沒載過本機制」的那條路
+        sys.path[:] = [p for p in saved_path if os.path.normcase(os.path.abspath(p or os.curdir)) != scripts_dir]
+        before = list(sys.path)
+        try:
+            la2 = load_module("la_i18n_decoy", os.path.join(SKILL, "scripts", "lit_api.py"))
+            ci2 = load_module("ci_i18n_decoy", os.path.join(SKILL, "scripts", "cite_integrity.py"))
+            decoy_ok = (la2._i18n is ci2._i18n and la2._i18n is not sys.modules["_i18n"] and sys.path == before
+                        and callable(la2.load_dotenv) and callable(ci2.load_dotenv)
+                        and _t(la2, "en", "verify.empty_title") == la.MESSAGES["verify.empty_title"]["en"]
+                        and _t(ci2, "en", "report.none") == ci2.MESSAGES["report.none"]["en"])
+            why = f"共用={la2._i18n is ci2._i18n} sys.path 不變={sys.path == before}"
+        except Exception as e:
+            decoy_ok, why = False, f"{type(e).__name__}: {e}"
+    finally:
+        sys.path[:] = saved_path
+        for n, mod in saved_mods.items():
+            if mod is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = mod
+    try:
+        shared = la._i18n is _ci()._i18n
+    except Exception as e:
+        shared = f"{type(e).__name__}: {e}"
+    check("I18N-11", "_T 安全：未知鍵→[key]、缺／多 kwarg 與含 {}% 的值不拋、en 缺項退回 zh、無參數模板原樣回傳；"
+          "_H 加倍 %；語言每次呼叫時讀；宿主已有別的 _i18n 模組時兩支腳本照樣載入、共用同一份機制、不改 sys.path",
+          safe and h == "100%% 中" and per_call and decoy_ok and shared is True,
+          f"safe={safe}（{r}） _H={h!r} per_call={per_call} 誘餌={decoy_ok}（{why}） la/ci 共用={shared}")
+
+
+def _zip_check_required():
+    """evals/zip_check.py 自己的 REQUIRED。它是腳本、import 就會執行，所以用 AST 讀常值；讀不到回空 tuple，
+    用它做的 stub ZIP 就缺檔，相關案例會紅，不會靜默變成什麼都沒比。"""
+    import ast
+    tree = ast.parse(open(os.path.join(BASE, "zip_check.py"), encoding="utf-8").read())
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "REQUIRED" for t in n.targets):
+            return tuple(ast.literal_eval(n.value))
+    return ()
+
+
+def _packaging_negative(tmp):
+    """I18N-12 的反向檢查，回 (ok, detail)：整棵樹複製到暫存目錄、另建一個 git repo，把 scripts/_i18n.py 從索引拿掉
+    （檔案仍在磁碟上，正是「寫了卻沒 git add」的樣子），package_skill.py 必須 exit 1、不留 ZIP，而且由它自己點名缺的檔。
+    只看離開碼不夠：zip_check.py 也有同一份清單，打包器自己的檢查壞了，zip_check 會在後面補位擋下，
+    離開碼照樣是 1——分不出是哪一層擋的。git 不能用就算失敗：沒跑成的檢查不是通過。"""
+    import shutil
+    tree = os.path.join(tmp, "neg-tree")
+    shutil.copytree(SKILL, tree, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", "*.pyc", "*.zip", "*.mutbak", ".env", ".env.*", "*.env"))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")}
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    def git(*a):
+        return subprocess.run(["git", "-C", tree, *a], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120, env=env)
+    try:
+        steps = [git("init", "-q"), git("add", "-A"), git("rm", "--cached", "-q", "scripts/_i18n.py")]
+        listed = git("ls-files").stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"git 不能用，反向檢查沒跑成：{type(e).__name__}"
+    if any(s.returncode != 0 for s in steps) or "scripts/_i18n.py" in listed or "scripts/lit_api.py" not in listed:
+        return False, f"暫存 git repo 不是預期的樣子：{[(s.returncode, s.stderr[-60:]) for s in steps]}"
+    zp = os.path.join(tmp, "neg.zip")
+    r = subprocess.run([PY, os.path.join(tree, "scripts", "package_skill.py"), "-o", zp], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120, cwd=tree, env=env)
+    own = [ln for ln in (r.stdout or "").splitlines() if ln.startswith("❌ ZIP 缺少必要檔案")]
+    left = os.path.exists(zp)
+    ok = r.returncode == 1 and not left and len(own) == 1 and "scripts/_i18n.py" in own[0]
+    return ok, f"exit={r.returncode} 留下ZIP={left} 打包器自己點名={own[:1]!r}"
+
+
+def test_i18n_packaging():
+    """I18N-12：打包後的 ZIP 跑得動英文模式——package_skill.py 只打包 git ls-files，_i18n.py 沒進 git 就會在
+    使用者機器上以 FileNotFoundError 收場；本地測試全綠也看不出來。反向：必要檔不在 git 索引裡時，
+    package_skill.py 自己拒絕（exit 1、不留 ZIP、點名缺檔）；zip_check.py 對缺必要檔的 ZIP 也回 exit 1。"""
+    import shutil
+    import zipfile
+    tmp = tempfile.mkdtemp(prefix="i18n-pkg-")
+    try:
+        zp = os.path.join(tmp, "lit-review.zip")
+        r = subprocess.run([PY, os.path.join(SKILL, "scripts", "package_skill.py"), "-o", zp], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=120, cwd=SKILL,
+                           env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        packed = r.returncode == 0 and os.path.isfile(zp)
+        names = zipfile.ZipFile(zp).namelist() if packed else []
+        has_i18n = "lit-review/scripts/_i18n.py" in names
+        # I18N-03a 讀這份金樣；它沒進 git 就不在 ZIP 裡（package_skill.py 只打包 git ls-files）
+        has_golden = ("lit-review/evals/fixtures/zh_literals.json" in names
+                      and "lit-review/evals/fixtures/zh_messages.json" in names)
+        xdir = os.path.join(tmp, "x")
+        if packed:
+            zipfile.ZipFile(zp).extractall(xdir)
+        env = dict(os.environ, LIT_LANG="en", PYTHONIOENCODING="utf-8")
+        la_p = os.path.join(xdir, "lit-review", "scripts", "lit_api.py")
+        ci_p = os.path.join(xdir, "lit-review", "scripts", "cite_integrity.py")
+        runs = []
+        for cmd in ([PY, la_p, "-h"], [PY, ci_p, "-h"], [PY, la_p, "verify", "--title", "   "]):
+            p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env, cwd=tmp)
+            runs.append((p.returncode, p.stdout, p.stderr))
+        ok = (packed and has_i18n and has_golden and runs[0][0] == 0 and runs[1][0] == 0 and runs[2][0] == 1
+              and not any(CJK_RE.search(o) for _, o, _ in runs) and not any("Traceback" in e for _, _, e in runs)
+              and json.loads(runs[2][1]).get("message") == _t(la, "en", "verify.empty_title"))
+        neg_ok, neg_detail = _packaging_negative(tmp)
+        # zip_check 那一份清單（給不經打包器、手動壓縮的 ZIP）：必要檔都在→過；只少 _i18n.py→exit 1 並列「缺必要檔」。
+        # 用 zip_check 自己的清單造 ZIP，不用打包器的：兩半各測各的，打包器那半壞了不會被這半順手抓到而掩蓋。
+        zc_req = _zip_check_required()
+        zc_codes = []
+        for nm, skip in (("zc_full.zip", None), ("zc_no_i18n.zip", "scripts/_i18n.py")):
+            zpath = os.path.join(tmp, nm)
+            with zipfile.ZipFile(zpath, "w") as z:
+                for req in zc_req:
+                    if req != skip:
+                        z.writestr("lit-review/" + req, "stub\n")
+            p = subprocess.run([PY, os.path.join(BASE, "zip_check.py"), zpath], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=60,
+                               env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+            # 看風險項那一行（「缺必要檔（1 處）」），不是摘要行「缺必要檔： 無」
+            zc_codes.append((p.returncode, "缺必要檔（" in (p.stdout or "")))
+        zc_ok = "scripts/_i18n.py" in zc_req and zc_codes == [(0, False), (1, True)]
+        check("I18N-12", "package_skill.py 產出的 ZIP 含 scripts/_i18n.py 與 evals/fixtures/zh_literals.json／zh_messages.json，"
+              "解壓後 lit_api.py／cite_integrity.py 在 LIT_LANG=en 下跑得動且輸出英文；_i18n.py 不在 git 索引時"
+              "打包器自己拒絕（exit 1、不留 ZIP、點名缺檔），zip_check 對缺必要檔的 ZIP 回 exit 1",
+              ok and neg_ok and zc_ok,
+              f"打包={packed}（{(r.stdout or r.stderr)[-80:]!r}） 含_i18n={has_i18n} 含金樣={has_golden} "
+              f"解壓後={[(c, e[-60:]) for c, _, e in runs]} 反向={neg_ok}（{neg_detail}） zip_check={zc_codes}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
+    # 釘住語言：既有案例全部斷言中文輸出。開發者殼層、cwd 或 ~/.env 裡的 LIT_LANG=en 會讓二十幾條案例
+    # 因為與程式無關的理由變紅。語言是每次呼叫時讀的，所以在這裡釘就夠（load_module 不在 import 時取字）。
+    os.environ["LIT_LANG"] = "zh"
     ap = argparse.ArgumentParser()
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-k", "--filter", default="")
@@ -1587,7 +2822,16 @@ def main():
               test_entity_decoding, test_chinese_punctuation,
               test_fulltext_boundary, test_output_hardening,
               test_versions_s2_absent, test_versions_published_lookup,
-              test_versions_review_fixes, test_versions_round3, test_hygiene_cx20]
+              test_versions_review_fixes, test_versions_round3, test_hygiene_cx20,
+              test_i18n_tables, test_i18n_callsites, test_i18n_zh_frozen, test_i18n_english_cli,
+              test_i18n_english_stubbed, test_i18n_resolution, test_i18n_flag, test_i18n_dotenv,
+              test_i18n_help, test_i18n_translator, test_i18n_packaging]
+    selected = [s for s in suites if args.filter.lower() in s.__name__.lower()]
+    if not selected:
+        # 打錯字的 -k 以前一個套件都沒跑、只剩 NET-01，卻印「1/1 passed」、離開碼 0——看起來像驗證過了。
+        print(f"-k {args.filter!r} 沒有對到任何套件；可用的套件：{' '.join(s.__name__ for s in suites)}",
+              file=sys.stderr)
+        sys.exit(2)
     # 封網閘門。本套件宣稱「不連網」，但這句話以前只寫在 README：MED-05/06 一直真的在連
     # Semantic Scholar，直到有人手動封網重跑才看出來——一次性的檢查抓得到這一次，抓不到下一次。
     # 所以寫成閘門：本行程的對外連線一律攔下並記錄，跑完只要有一筆，NET-01 就失敗。
@@ -1603,9 +2847,7 @@ def main():
     socket.create_connection = _blocked
     socket.getaddrinfo = _blocked
 
-    for s in suites:
-        if args.filter and args.filter.lower() not in s.__name__.lower():
-            continue
+    for s in selected:
         try:
             s()
         except Exception as e:  # 測試本身壞掉也要如實顯示，不可靜默跳過

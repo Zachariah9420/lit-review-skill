@@ -3,8 +3,8 @@
 Two scripts, no network, seconds to run. Run both before shipping any change to `scripts/`.
 
 ```bash
-python evals/test_regression.py     # 119 frozen cases
-python evals/mutation_check.py      # 57 mutations; each must be caught
+python evals/test_regression.py     # 132 frozen cases
+python evals/mutation_check.py      # 74 mutations; each must be caught
 python evals/make_fixtures.py       # regenerate fixtures/ (only when adding a case)
 ```
 
@@ -26,6 +26,9 @@ Every case corresponds to a defect that actually occurred. The id prefix records
 | `FT-*` | see case docstrings (covers the `fulltext` boundary: no paywall circumvention, an institutional route when no free copy exists, source disagreements stated) |
 | `PUNCT-*` | see case docstrings (covers full-width punctuation in the Chinese output strings of `lit_api.py` and `cite_integrity.py`) |
 | `NET-*` | the suite's own no-network gate (`NET-01`); added after MED-05/06 turned out to be really connecting to Semantic Scholar |
+| `I18N-*` | the English output mode (`LIT_LANG=en`): both `MESSAGES` tables complete and consistent (same keys, placeholders, identifier tokens and emoji in zh and en; en ASCII-only apart from the emoji), the call-site contract, the Chinese output unchanged (`I18N-03a` checks every pre-change Chinese string against the frozen inventory `fixtures/zh_literals.json`, and every key's zh text against the per-key golden `fixtures/zh_messages.json`; the one exception is `-h` / usage, which gains the `--lang` line, with argparse re-aligning the help columns accordingly), no CJK in English output, `LIT_LANG` / `--lang` / `.env` resolution, `-h` in English, and the packaged ZIP running in English (and `package_skill.py` refusing to leave a ZIP that lacks a required file) |
+
+The suite pins `LIT_LANG=zh` for the whole run (at the start of `main()`, inherited by the CLI subprocesses), so a `LIT_LANG=en` in your shell, your cwd's `.env` or `~/.env` cannot turn the existing cases red; the `I18N-*` cases switch to `en` themselves where they need it.
 
 It calls the production functions (`rank_candidates`, `decide_verdict`, `norm_title`, …) with frozen candidate data, plus the CLIs against fixture files. No API keys, no network, no flakiness.
 
@@ -63,7 +66,9 @@ python evals/zip_check.py lit-review.zip
 
 Scans the archive for API keys, personal email addresses, machine-specific absolute
 paths, and stray `.env` / `.git` / `__pycache__` entries. Manual review misses these;
-a regex does not.
+a regex does not. It also fails when a file the scripts or the bundled tests need is
+missing (`缺必要檔`; the same list as `REQUIRED` in `scripts/package_skill.py`, which
+already refuses to leave such a ZIP behind) — that covers archives zipped by hand.
 
 ## A flaky test is a broken test
 
@@ -85,6 +90,7 @@ otherwise.
 2. Add the matching mutation to `mutation_check.py` (the smallest edit that reintroduces the bug).
 3. Run both. The regression case must pass; the mutation must be caught.
 4. If the case needs a file, generate it in `make_fixtures.py` — never hand-place binaries in `fixtures/`.
+5. If the change adds a user-visible string to `lit_api.py` or `cite_integrity.py`, it goes into that script's `MESSAGES` table with both a `zh` and an `en` text (same `{placeholders}`, identifier tokens and leading emoji; en ASCII-only apart from the emoji) — `I18N-01` / `I18N-02` fail on a missing language or a Chinese literal outside the table. `fixtures/zh_literals.json` is the frozen inventory of the Chinese strings as they were before the English mode; do not edit it to make a case pass. A new key also needs its zh text in the per-key golden `fixtures/zh_messages.json` (`{script: {key: zh}}`): `I18N-03a` compares the table and the golden in both directions, so adding a key without updating the golden fails loudly. That is intended — the Chinese output never changes without someone writing the change into the golden in the same commit; changing an existing zh text likewise means changing its golden entry on purpose, not to make the case pass.
 
 ## Not covered here
 

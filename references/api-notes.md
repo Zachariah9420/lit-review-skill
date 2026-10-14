@@ -2,6 +2,15 @@
 
 免費學術 API 的細節、限制與踩坑筆記。`scripts/lit_api.py` 已封裝好這些，此文件供除錯與理解回傳欄位用。
 
+## 輸出語言（LIT_LANG）
+
+兩支腳本（`lit_api.py`、`cite_integrity.py`）的訊息預設是繁體中文；`LIT_LANG=en` 改成英文。優先順序：`--lang`（子命令前後皆可）> 環境變數 `LIT_LANG` > `.env`（先 cwd 後 `~/.env`）> 預設 zh；`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代），不認得的值退回 zh 並在 stderr 印一行警告。本文件引用的訊息原文都是 zh 版。
+
+- **隨語言改變**：說明性文字——`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note` 的文字，argparse 的 `-h` 說明，以及 `cite_integrity.py` 的文字報告。另有三個看起來像資料的值也會跟著變：`snowball` 改走 OpenAlex 時的 `citations_source`、`retract` 由標題搜尋發現的通知的 `label`、`versions` 未經 Crossref 覆核時 `published_version.source` 的值——程式判斷不要比對這三個值。
+- **永遠不變**：JSON 欄位名、`verdict_hint` 值、錯誤碼（如 `INVALID_INPUT`、`ARXIV_ID_NOT_FOUND`）、`basis`／`version_link` 值、狀態 emoji 前綴（✅❌❓⚠️🚨🔒）、離開碼。判讀時依據這些，不要比對訊息文字。
+- **原樣轉出、不翻譯**：`*_error`（`crossref_error`、`s2_error`、`arxiv_error`…）與 `error` 欄位裡由上游服務或作業系統丟出的錯誤文字；在非英文版 Windows 上可能是作業系統的語言。腳本自己寫的錯誤說明（例如查詢逾時、Unpaywall 查無此 DOI）則跟著 `LIT_LANG`。
+- **寫檔當下就定語言**：`quality_warnings` 是自由文字，會隨結果 JSON 存檔、也會被 `export-xml` 寫進 EndNote 的 Research Notes。中文模式產的檔案之後用英文模式讀，紅旗仍是中文（反之亦然）；只有 `export-xml` 加的前綴（`品質紅旗：`／`Quality flags: `）跟著當下的語言。
+
 ## OpenAlex(search 的自動備援)
 
 - 端點：`https://api.openalex.org/works`，免金鑰、額度非常大方(每日 10 萬次)。
@@ -48,10 +57,15 @@
 
 ## quality_warnings(品質紅旗)
 
-`search`/`snowball` 每筆結果可能帶 `quality_warnings` 陣列，規則：
-- `0被引(發表已滿一年)`、`低被引(≤3)且發表逾3年`——新文獻 0 被引正常，所以有年齡門檻
-- `期刊不在DOAJ也非CORE收錄，品質需人工確認`——僅 OpenAlex 結果有此判斷(S2 無期刊層資料);DOAJ/CORE 都不在不必然是掠奪性期刊，但值得起疑
-- `無DOI`、`無期刊/會議名`
+`search`/`snowball` 每筆結果可能帶 `quality_warnings` 陣列，規則如下。左欄是 zh 文字（預設），中欄是 `LIT_LANG=en` 時的同一條紅旗；語言在寫檔當下決定（見〈輸出語言〉）：
+
+| zh 文字 | `LIT_LANG=en` | 說明 |
+|---|---|---|
+| `0被引(發表已滿一年)` | `0 citations (published in an earlier calendar year)` | 新文獻 0 被引正常，所以有年齡門檻；兩條被引紅旗的年齡都以日曆年計（今年減發表年，zh 與 en 皆同） |
+| `低被引(≤3)且發表逾3年` | `Low citations (<=3) and published 3 or more calendar years ago` | 同上，年齡門檻 |
+| `期刊不在DOAJ也非CORE收錄，品質需人工確認` | `Journal is not in DOAJ and is not a CORE-indexed source; quality needs manual confirmation` | 僅 OpenAlex 結果有此判斷(S2 無期刊層資料);DOAJ/CORE 都不在不必然是掠奪性期刊，但值得起疑 |
+| `無DOI` | `No DOI` | |
+| `無期刊/會議名` | `No journal/conference name` | |
 
 紅旗不是否決，是「只能當佐證+報告中必須明示」的信號。2026-07 實戰教訓：兩篇短影音文獻(0被引/非主流期刊)若有此機制會自動被標，不必靠驗證 agent 起疑。
 

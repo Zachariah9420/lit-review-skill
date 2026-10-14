@@ -18,6 +18,7 @@
 """
 import argparse
 import html
+import importlib.util
 import json
 import os
 import re
@@ -34,6 +35,434 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+# 訊息表與翻譯機制：機制在 scripts/_i18n.py，本檔只保有自己的訊息表。依檔案路徑載入，用專屬名稱
+# 登記在 sys.modules（lit_api 與 cite_integrity 共用同一份），不動 sys.path、也不 `import _i18n`：
+# 宿主行程若已載入別的同名模組，`import _i18n` 拿到的是那一個（ImportError: cannot import name
+# load_dotenv），而把 scripts/ 插進 sys.path 會改到宿主的模組搜尋路徑。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_I18N_NAME = "lit_review_i18n"
+
+
+def _load_i18n():
+    mod = sys.modules.get(_I18N_NAME)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(_I18N_NAME, os.path.join(_HERE, "_i18n.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[_I18N_NAME] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+_i18n = _load_i18n()
+load_dotenv = _i18n.load_dotenv   # main() 經本模組的全域呼叫它（測試會替換 la.load_dotenv）
+
+# 使用者看得到的訊息，全部在這裡：{key: {"zh": 中文（逐字保留原文）, "en": 英文}}。
+# 規則：模板用具名 {placeholder}（兩種語言同名）；呼叫端只傳模板宣告的名字；無參數的模板原樣回傳，
+# 所以可以含字面的 { } 與 %；欄位名、判定值、錯誤碼、狀態 emoji 前綴是資料，兩種語言一致；英文只用 ASCII
+# （emoji 除外）。中文字串用雙引號單行字面值（可隱式串接），PUNCT 測試才看得到它們。
+MESSAGES = {
+    # ---- Semantic Scholar 429 指引 ----
+    "s2.key_hint": {
+        "zh": "免費金鑰申請頁（Semantic Scholar 官方）：{url} ；"
+              "取得後在 .env 加一行：S2_API_KEY=<your key> ；"
+              "程式先讀目前資料夾的 .env，再讀 ~/.env。",
+        "en": "Apply for a free key on the official Semantic Scholar page: {url} - "
+              "then add one line to .env: S2_API_KEY=<your key> - "
+              "the script reads .env in the current directory first, then ~/.env."},
+    "s2.warn_429_retry": {
+        "zh": "Semantic Scholar 回 429（無金鑰時共享池很擠）；程式會自動退避重試。{hint}",
+        "en": "Semantic Scholar returned 429 (the shared pool is crowded when no API key is set); "
+              "the script will back off and retry automatically. {hint}"},
+    "s2.warn_429_final": {
+        "zh": "Semantic Scholar 回 429（無金鑰時共享池很擠）；重試已用完，這次指令以 429 結束。{hint}",
+        "en": "Semantic Scholar returned 429 (the shared pool is crowded when no API key is set); "
+              "the retries are used up, so this command ends with 429. {hint}"},
+    # ---- 品質紅旗（quality_warnings；寫入檔案與 EndNote Research Notes，語言在寫入當下決定）----
+    "quality.no_doi": {"zh": "無DOI", "en": "No DOI"},
+    "quality.zero_cites": {"zh": "0被引(發表已滿一年)", "en": "0 citations (published in an earlier calendar year)"},
+    "quality.low_cites": {"zh": "低被引(≤3)且發表逾3年",
+                          "en": "Low citations (<=3) and published 3 or more calendar years ago"},
+    "quality.no_venue": {"zh": "無期刊/會議名", "en": "No journal/conference name"},
+    "quality.venue_unindexed": {
+        "zh": "期刊不在DOAJ也非CORE收錄，品質需人工確認",
+        "en": "Journal is not in DOAJ and is not a CORE-indexed source; quality needs manual confirmation"},
+    # ---- search / arxiv 備援 ----
+    "search.fallback_note": {
+        "zh": "Semantic Scholar 持續 429，已改用 OpenAlex；結果同樣可信，照常使用",
+        "en": "Semantic Scholar kept returning 429, so OpenAlex was used instead; "
+              "the results are equally trustworthy, use them as usual"},
+    "arxiv.fallback_note": {
+        "zh": "export.arxiv.org 無法連線({err})，已改用 Semantic Scholar(含 arXiv 收錄)",
+        "en": "export.arxiv.org is unreachable ({err}); fell back to Semantic Scholar (which also indexes arXiv)"},
+    # ---- pick / export-xml ----
+    "common.index_out_of_range": {"zh": "index 越界：{bad}", "en": "Index out of range: {bad}"},
+    "export_xml.bad_inline_json": {"zh": "inline JSON 不合法：{err}", "en": "Invalid inline JSON: {err}"},
+    "export_xml.nothing_to_export": {
+        "zh": "沒有可匯出的文獻物件——拒絕產生空的 XML(靜默產空檔會讓引用悄悄消失)",
+        "en": "There are no reference objects to export - refusing to write an empty XML file "
+              "(a silently empty file would make citations vanish without notice)"},
+    "export_xml.quality_prefix": {"zh": "品質紅旗：", "en": "Quality flags: "},
+    # ---- versions ----
+    "versions.jdoi.not_found": {
+        "zh": "Crossref 查無此 DOI（可能打錯，或不是 Crossref 註冊的 DOI）：未當成正式版",
+        "en": "Crossref has no record of this DOI (possibly mistyped, or not a Crossref-registered DOI): "
+              "not treated as the published version"},
+    "versions.jdoi.crossref_failed": {
+        "zh": "Crossref 查詢失敗，未能核對：見 crossref_error",
+        "en": "The Crossref lookup failed, so the DOI could not be checked: see crossref_error"},
+    "versions.jdoi.is_preprint": {
+        "zh": "作者自填的 DOI 指向另一份預印本，不是正式發表",
+        "en": "The DOI entered by the author points to another preprint, not a formal publication"},
+    "versions.jdoi.mismatch_note": {
+        "zh": "作者在 arXiv 自填的 DOI，但作者或題目與預印本對不上："
+              "可能是相關論文、資料集或整本論文集",
+        "en": "This is the DOI the author entered on arXiv, but its authors or title do not match the preprint: "
+              "it may be a related paper, a dataset, or a whole proceedings volume"},
+    "versions.unknown_source": {"zh": "來源未知", "en": "unknown source"},
+    "versions.unknown_year": {"zh": "年份未知", "en": "unknown year"},
+    "versions.s2_doi_is_preprint": {
+        "zh": "S2 合併的 DOI {doi} 指向預印本伺服器（{type}），不算正式版；改以標題與作者搜尋",
+        "en": "The DOI {doi} merged in by S2 points to a preprint server ({type}), so it is not counted as "
+              "the published version; searching by title and author instead"},
+    "versions.s2_doi_not_in_crossref": {
+        "zh": "S2 合併的 DOI {doi} 在 Crossref 查無（可能是 DataCite 的 DOI），"
+              "未當成正式版；改以標題與作者搜尋",
+        "en": "The DOI {doi} merged in by S2 is not found in Crossref (possibly a DataCite DOI), so it is not "
+              "counted as the published version; searching by title and author instead"},
+    "versions.source_unchecked": {
+        "zh": "semanticscholar（未經 Crossref 覆核）",
+        "en": "semanticscholar (not re-checked against Crossref)"},
+    "versions.s2_404_note": {
+        "zh": "Semantic Scholar 查無此 arXiv 記錄（HTTP 404，非查詢失敗）；"
+              "版本鏈改由 arXiv 標題經 Crossref 推定，無 S2 版本合併訊號佐證",
+        "en": "Semantic Scholar has no record of this arXiv ID (HTTP 404 - not a query failure); the version "
+              "chain is inferred from the arXiv title via Crossref, with no S2 version-merge signal to back it up"},
+    "versions.unsupported_identifier": {
+        "zh": "輸入無可比對的拉丁字元(中文標題或純符號)，且不是 DOI/arXiv 編號："
+              "版本解析僅支援拉丁字母標題與識別碼，請改用 DOI 或 arXiv ID。",
+        "en": "The input has no comparable Latin characters (a Chinese-language title or only symbols) and is "
+              "not a DOI/arXiv ID: version resolution only supports Latin-alphabet titles and identifiers, "
+              "so please use a DOI or arXiv ID."},
+    "versions.rec.published": {
+        "zh": "已有正式發表版({desc})，學術慣例應引正式版",
+        "en": "A published version exists ({desc}); academic convention is to cite the published version"},
+    "versions.rec.input_is_published": {
+        "zh": "輸入的 DOI 本身就是正式發表版({desc})，可直接引用",
+        "en": "The DOI you entered is itself the published version ({desc}); it can be cited as is"},
+    "versions.note.arxiv_journal_ref": {
+        "zh": "版本連結來自 arXiv 上作者自填的期刊 DOI，且作者與題目對得上——"
+              "作者自己標明的正式版，不是由標題推定",
+        "en": "The version link comes from the journal DOI the author entered on arXiv, and the authors and "
+              "title match - the author named this published version themselves; it was not inferred from the title"},
+    "versions.note.s2_merge_unchecked": {
+        "zh": "S2 版本合併訊號給的 DOI，但 Crossref 覆核失敗：書目未經核對，引用前請自行確認",
+        "en": "This DOI comes from S2's version-merge signal, but the Crossref re-check failed: the "
+              "bibliographic data has not been verified, so confirm it yourself before citing"},
+    "versions.note.title_inferred": {
+        "zh": "版本鏈由標題相似度推定(未經 S2 版本合併訊號佐證):"
+              "同名標題的不同論文可能被誤配，請核對作者與年份後再改引",
+        "en": "The version chain was inferred from title similarity (not backed by an S2 version-merge signal): "
+              "different papers with the same title may be mismatched, so check the authors and year before "
+              "switching the citation"},
+    "versions.note.errors_suffix": {
+        "zh": "另有來源查詢失敗（{errs}），更強的版本訊號未能核對",
+        "en": "one or more source lookups also failed ({errs}), so stronger version signals could not be checked"},
+    "versions.rec.incomplete": {
+        "zh": "版本解析未完成——來源查詢失敗(見 *_error 欄位),"
+              "這不代表沒有正式發表版；請稍後重試",
+        "en": "Version resolution is incomplete - a source lookup failed (see the *_error fields); "
+              "this does not mean there is no published version. Please retry later"},
+    "versions.rec.incomplete_possible_suffix": {
+        "zh": "；已找到的「可能的正式版」見 possible_published_versions",
+        "en": "; the 'possible published versions' already found are in possible_published_versions"},
+    "versions.rec.possible": {
+        "zh": "標題相似度沒有找到正式版，但找到 {k} 筆「可能」是正式版的紀錄"
+              "（依據見各筆的 basis：作者自填 DOI 或作者搜尋）：請逐筆核對作者、摘要與方法，"
+              "確認是同一研究就改引正式版——很多期刊不接受引用 arXiv 預印本",
+        "en": "Title similarity found no published version, but {k} record(s) that may be the published version "
+              "were found (see each record's basis: author-entered DOI or author search): check the authors, "
+              "abstract and methods of each one, and if it is the same study, cite the published version - "
+              "many journals do not accept citations of arXiv preprints"},
+    "versions.rec.no_title": {
+        "zh": "來源有這筆記錄但沒有標題可供比對，未做任何版本搜尋："
+              "請改用 DOI 或自行提供完整標題再查",
+        "en": "A source has this record but it has no title to compare, so no version search was run: "
+              "retry with a DOI or supply the full title"},
+    # 下面兩條是同一句話的兩個整句版本（只做了標題搜尋／標題與作者都搜過）：不用片語拼接。
+    # 兩條的換行刻意不同，突變測試才能用單行片段只命中其中一條。
+    "versions.rec.not_found_title": {
+        "zh": "以標題搜尋查無正式發表版（查無 ≠ 不存在：會議論文集常不註冊 DOI，改了標題的正式版也可能沒搜到）。"
+              "注意很多期刊不接受引用 arXiv 預印本——引用前請再確認一次，例如在 Google Scholar 看這篇的「所有版本」",
+        "en": "The title search found no published version (not found does not mean it does not exist: "
+              "conference proceedings often do not register DOIs, and a published version with a changed title "
+              "may simply not have turned up). Note that many journals do not accept citations of arXiv "
+              "preprints - double-check before citing, for example by looking at this paper's 'All versions' "
+              "in Google Scholar"},
+    "versions.rec.not_found_title_author": {
+        "zh": "以標題與作者搜尋都查無正式發表版（查無 ≠ 不存在：會議論文集常不註冊 DOI，"
+              "改了標題的正式版也可能沒搜到）。注意很多期刊不接受引用 arXiv 預印本——"
+              "引用前請再確認一次，例如在 Google Scholar 看這篇的「所有版本」",
+        "en": "Neither the title search nor the author search found a published version (not found does not "
+              "mean it does not exist: conference proceedings often do not register DOIs, and a published "
+              "version with a changed title may simply not have turned up). Note that many journals do not "
+              "accept citations of arXiv preprints - double-check before citing, for example by looking at "
+              "this paper's 'All versions' in Google Scholar"},
+    "versions.rec.suffix_jdoi_unused": {
+        "zh": "；arXiv 上作者自填的期刊 DOI 未能採用，原因見 arxiv_record.journal_doi_status",
+        "en": "; the journal DOI the author entered on arXiv could not be used - "
+              "see arxiv_record.journal_doi_status for the reason"},
+    "versions.rec.arxiv_id_not_found": {
+        "zh": "Semantic Scholar 與 arXiv API 皆查無此編號（兩者都回查無，不是查詢失敗）："
+              "沒有任何來源證實這篇存在，請先確認編號是否打錯；確認之前不要引用",
+        "en": "Neither Semantic Scholar nor the arXiv API has this ID (both answered not-found; this is not a "
+              "query failure): no source confirms that this paper exists. Check the ID for typos first, and "
+              "do not cite it until that is confirmed"},
+    "versions.rec.title_not_found": {
+        "zh": "以標題搜尋查無正式發表版（查無 ≠ 不存在）；若這是預印本，"
+              "注意很多期刊不接受引用預印本，請改以 DOI 或 arXiv 編號再查一次",
+        "en": "The title search found no published version (not found does not mean it does not exist); "
+              "if this is a preprint, note that many journals do not accept citations of preprints, "
+              "so retry with a DOI or arXiv ID"},
+    "versions.rec.cannot_resolve": {
+        "zh": "無法解析版本鏈，請確認輸入為 DOI:x / ARXIV:x / 完整標題",
+        "en": "Could not resolve the version chain; make sure the input is DOI:x / ARXIV:x / a full title"},
+    # ---- fulltext ----
+    "fulltext.need_mailto": {
+        "zh": "Unpaywall 要求提供聯絡 email：請在 .env 設 CROSSREF_MAILTO "
+              "(同一個值兩邊共用)，否則只能用 S2 的 OA 欄位",
+        "en": "Unpaywall requires a contact email: set CROSSREF_MAILTO in .env "
+              "(the same value is shared by both services), otherwise only the OA field from S2 can be used"},
+    "fulltext.unpaywall_404": {"zh": "Unpaywall 查無此 DOI", "en": "Unpaywall has no record of this DOI"},
+    "fulltext.unpaywall_http": {"zh": "Unpaywall 查詢失敗 HTTP {code}", "en": "Unpaywall lookup failed: HTTP {code}"},
+    "fulltext.unpaywall_failed": {"zh": "Unpaywall 查詢失敗：{err}", "en": "Unpaywall lookup failed: {err}"},
+    "fulltext.s2_oa_failed": {"zh": "S2 OA 欄位備援查詢失敗：{err}",
+                              "en": "The fallback lookup of the S2 OA field failed: {err}"},
+    "fulltext.status.ok": {"zh": "✅ 有合法免費全文", "en": "✅ Legal free full text available"},
+    "fulltext.status.failed": {"zh": "❓ 查詢失敗(不代表沒有免費版)",
+                               "en": "❓ Lookup failed (this does not mean no free version exists)"},
+    "fulltext.status.none": {"zh": "🔒 未找到合法免費版", "en": "🔒 No legal free version found"},
+    "fulltext.source_discrepancy": {
+        "zh": "Unpaywall 回報 closed，但 Semantic Scholar 的 OA 欄位找到免費版"
+              "(常見於機構典藏的 green OA 未被 Unpaywall 收錄)。連結可用，"
+              "但版本可能是作者稿而非出版社排版版，引用頁碼請以出版社版為準",
+        "en": "Unpaywall reports closed, but a free version was found in Semantic Scholar's OA field "
+              "(common when green OA copies in institutional repositories are not indexed by Unpaywall). "
+              "The link works, but the version may be the author's manuscript rather than the publisher's "
+              "typeset version; take page numbers for citations from the publisher's version"},
+    "fulltext.how.publisher": {"zh": "https://doi.org/{doi}(出版社頁面，可能需訂閱)",
+                               "en": "https://doi.org/{doi} (publisher page; may require a subscription)"},
+    "fulltext.how.library": {
+        "zh": "透過你所在機構的圖書館取得(Google Scholar Button 的"
+              "「find full text in your university library」或圖書館 link resolver)",
+        "en": "Get it through your institution's library (the 'find full text in your university library' "
+              "option of the Google Scholar Button, or the library link resolver)"},
+    "fulltext.how.ill": {"zh": "館際合作/文獻傳遞服務", "en": "Interlibrary loan / document delivery service"},
+    "fulltext.note": {
+        "zh": "只回報合法可取得的位置；本工具不繞過付費牆。"
+              "「未找到免費版」不代表拿不到全文——機構訂閱是正當且通常更完整的途徑。",
+        "en": "Only legally accessible locations are reported; this tool does not bypass paywalls. "
+              "'No free version found' does not mean the full text cannot be obtained - an institutional "
+              "subscription is a legitimate and usually more complete route."},
+    # ---- retract ----
+    "retract.label.title_search": {
+        "zh": "由標題搜尋發現（未經 Crossref updates 關聯確認）",
+        "en": "Found by title search (not confirmed by a Crossref updates relation)"},
+    "retract.status.suspected": {
+        "zh": "⚠️ 疑似有撤稿/關切聲明（由標題搜尋發現，未經 updates 關聯確認）"
+              "——請開啟 notices 中的通知確認是否指向本文",
+        "en": "⚠️ Possible retraction / expression of concern (found by title search, not confirmed by an "
+              "updates relation) - open the entries listed in notices to confirm whether they refer to this paper"},
+    "retract.status.retracted": {"zh": "🚨 有撤稿/疑慮記錄，不可引用，詳見 notices",
+                                 "en": "🚨 Retraction / concern on record - do not cite; see notices"},
+    "retract.status.corrected": {
+        "zh": "⚠️ 有更正記錄(correction/erratum)，引用前確認更正內容",
+        "en": "⚠️ Correction on record (correction/erratum) - check what was corrected before citing"},
+    "retract.status.incomplete": {
+        "zh": "❓ 撤稿查詢不完整（updates 無記錄，標題搜尋備援失敗）",
+        "en": "❓ Retraction check incomplete (no record in updates, and the title-search fallback failed)"},
+    "retract.status.clean": {"zh": "✅ Crossref 無已知撤稿/更正記錄",
+                             "en": "✅ No known retraction or correction record in Crossref"},
+    "retract.status.failed": {"zh": "❓ 查詢失敗", "en": "❓ Lookup failed"},
+    "retract.coverage_caveat": {
+        "zh": "Crossref 的撤稿關聯對 2010 年前的文獻覆蓋不佳（部分出版社把撤稿/"
+              "關切聲明當成獨立文章發表而未設關聯）。舊文獻的「無記錄」證據力弱，"
+              "藥物安全等高風險引用建議另以 Retraction Watch 網站複核。",
+        "en": "Crossref's retraction links cover pre-2010 literature poorly (some publishers issue retraction / "
+              "concern notices as stand-alone articles without setting a link). For older papers, 'no record' "
+              "is weak evidence; for high-risk citations such as drug safety, also check the Retraction Watch "
+              "website."},
+    "retract.note": {
+        "zh": "Crossref 撤稿覆蓋不完備(尤其非英文期刊)：無記錄 ≠ 保證沒事；"
+              "生醫/心理領域高風險引用建議再以 Retraction Watch 網站人工複核",
+        "en": "Crossref's retraction coverage is incomplete (especially for non-English journals): no record "
+              "does not guarantee a clean record; for high-risk biomedical / psychology citations, also check "
+              "the Retraction Watch website by hand"},
+    # ---- brief / pick / export-xml 的檔案載入 ----
+    "load.bad_json": {"zh": "檔案不是合法 JSON:{err}", "en": "The file is not valid JSON: {err}"},
+    "load.root_type": {"zh": "JSON 根層必須是物件或陣列", "en": "The JSON root must be an object or an array"},
+    "load.no_entries": {
+        "zh": "找不到可用的文獻清單(results/citations/references/candidates)"
+              "，也不是單篇文獻物件",
+        "en": "Could not find a usable list of references (results/citations/references/candidates), "
+              "and the file is not a single-reference object either"},
+    # ---- snowball ----
+    "snowball.source_openalex": {"zh": "openalex(按被引數排序)", "en": "openalex (sorted by citation count)"},
+    "snowball.not_found_hint": {"zh": "確認 id 格式，如 DOI:10.x/y", "en": "Check the id format, e.g. DOI:10.x/y"},
+    # ---- verify：衍生條目訊號與降級理由 ----
+    "deriv.short_pages": {
+        "zh": "候選僅 {span} 頁（{page}）——書評、讀者投書、社論等衍生條目的典型長度",
+        "en": "The candidate is only {span} page(s) long ({page}) - the typical length of derivative items "
+              "such as book reviews, letters to the editor and editorials"},
+    "deriv.crossref_type": {"zh": "Crossref 類型為 {type}", "en": "Crossref type is {type}"},
+    "deriv.first_author_other": {
+        "zh": "使用者提供的作者出現在候選中，但第一作者是他人（{first}）"
+              "——書評／評論條目的典型樣態",
+        "en": "The author(s) you supplied appear in the candidate's author list, but the first author is someone "
+              "else ({first}) - the typical pattern of a book-review or commentary entry"},
+    "verdict.year_gap": {"zh": "年份差 {yd} 年(>1)", "en": "Year difference of {yd} year(s) (>1)"},
+    "verdict.no_author_overlap": {"zh": "使用者提供的作者無一出現在候選作者中",
+                                  "en": "None of the authors you supplied appear among the candidate's authors"},
+    "verdict.cand_no_authors": {
+        "zh": "候選無作者資料，無法用使用者提供的作者佐證",
+        "en": "The candidate has no author data, so the authors you supplied cannot be corroborated"},
+    "verdict.cand_no_year": {"zh": "候選無年份資料，無法用年份佐證",
+                             "en": "The candidate has no year data, so the year cannot be corroborated"},
+    "verdict.ambiguous": {"zh": "另有相似度僅差 {gap} 的不同文獻，配對有歧義",
+                          "en": "A different paper is within {gap} in similarity, so the match is ambiguous"},
+    # ---- verify ----
+    "verify.unsupported_title": {
+        "zh": "標題正規化後無可比對的拉丁字元（可能為中文/日文/純符號標題）："
+              "本工具的相似度比對僅支援拉丁字母標題，無法判定。"
+              "中文文獻請用 Google Scholar 或華藝等中文索引人工查核。",
+        "en": "After normalization the title has no comparable Latin characters (it may be a "
+              "Chinese/Japanese/symbol-only title): this tool's similarity matching only supports Latin-alphabet "
+              "titles, so no verdict can be given. For Chinese-language references, check by hand with "
+              "Google Scholar or a Chinese index such as Airiti."},
+    "verify.timeout": {
+        "zh": "查詢逾時：{sec} 秒內未回應（執行緒可能仍在執行，本次不採計其結果）",
+        "en": "Lookup timed out: no response within {sec} seconds (the thread may still be running; "
+              "its result is not used)"},
+    "verify.single_source": {
+        "zh": "{providers} 查詢失敗，本次判定僅根據單一來源；"
+              "證據強度低於雙源交叉，建議稍後重跑確認",
+        "en": "The lookup failed for {providers}, so this verdict rests on a single source; the evidence is "
+              "weaker than a two-source cross-check, and a rerun later to confirm is recommended"},
+    "verify.partial_failure": {
+        "zh": "查詢未完整完成（{providers} 見上），不可解讀為查無；請稍後重試或人工查證",
+        "en": "The lookup did not finish completely ({providers} - see above); this must not be read as "
+              "not-found. Retry later or verify by hand"},
+    "verify.not_found": {
+        "zh": "實際查核來源（Crossref + Semantic Scholar）皆無合理候選；"
+              "書籍章節、非英語文獻、產業論文集常不在這兩個索引中，查無 ≠ 不存在",
+        "en": "Neither of the sources actually checked (Crossref + Semantic Scholar) has a plausible candidate; "
+              "book chapters, non-English literature and industry proceedings are often missing from these "
+              "two indexes, so not found does not mean it does not exist"},
+    "verify.empty_title": {"zh": "--title 不可為空", "en": "--title must not be empty"},
+    "batch.need_array": {"zh": "需要一個陣列，每筆含 title（可選 authors/year/n）",
+                         "en": "Expected an array in which each item has a title (authors/year/n are optional)"},
+    "batch.entry_not_object": {
+        "zh": "清單第 {n} 筆不是物件（而是 {type}），未查詢",
+        "en": "Item {n} of the list is not an object (it is {type}); it was not looked up"},
+    # ---- export ----
+    "export.arxiv_not_found_note": {
+        "zh": "S2 未收錄此 arXiv 編號；arXiv API 亦無回應，"
+              "請確認編號或稍後重試",
+        "en": "S2 does not index this arXiv ID and the arXiv API did not respond either; "
+              "check the ID or retry later"},
+    "export.upstream_unavailable_note": {
+        "zh": "查詢失敗，不是查無此文獻；請稍後重試",
+        "en": "The lookup failed; this does not mean the paper does not exist. Please retry later"},
+    # ---- main() 的錯誤處理 ----
+    "cli.hint_429": {
+        "zh": "Semantic Scholar 共享池壅塞（重試後仍 429）。等 60–120 秒再跑同一指令；"
+              "長期解法是申請免費 S2_API_KEY 放入 .env。{hint}",
+        "en": "The Semantic Scholar shared pool is congested (still 429 after retries). Wait 60-120 seconds "
+              "and rerun the same command; the long-term fix is to apply for a free S2_API_KEY and put it "
+              "in .env. {hint}"},
+    "cli.hint_429_keyed": {
+        "zh": "已設 S2_API_KEY 仍遇到 429（重試後仍 429）：這是金鑰本身的速率上限，"
+              "不是缺金鑰；等 60–120 秒再跑同一指令，或降低 --workers",
+        "en": "S2_API_KEY is set but Semantic Scholar still returned 429 (still 429 after retries): this is "
+              "the rate limit of the key itself, not a missing key. Wait 60-120 seconds and rerun the same "
+              "command, or lower --workers"},
+    "cli.hint_429_other": {
+        "zh": "{host} 回 429（速率限制，重試後仍 429）：等 60–120 秒再跑同一指令",
+        "en": "{host} returned 429 (rate limited; still 429 after retries): wait 60-120 seconds and rerun "
+              "the same command"},
+    "cli.upstream_service": {"zh": "上游服務", "en": "The upstream service"},
+    "cli.unparseable_msg": {
+        "zh": "上游回應無法解析(可能是維護頁或截斷內容):{err}",
+        "en": "The upstream response could not be parsed (possibly a maintenance page or truncated content): {err}"},
+    "cli.unparseable_note": {"zh": "這是查詢失敗，不是查無此文獻；請稍後重試",
+                             "en": "This is a query failure, not a sign that the paper does not exist; please retry later"},
+    # ---- 接合符（中英文的標點不同，不能用 + 拼句）----
+    "sep.list": {"zh": "、", "en": ", "},
+    "sep.clause": {"zh": "；", "en": "; "},
+    # ---- argparse 說明（只在 -h 出現）----
+    "help.description": {
+        "zh": __doc__,     # -h 的說明就是模組 docstring，逐字相同
+        "en": "lit_api.py - unified Semantic Scholar / Crossref / arXiv query CLI (standard library only, Python 3.8+)\n"
+              "\n"
+              "Sub-commands:\n"
+              "  search   <query>            Semantic Scholar keyword search (find related literature)\n"
+              "  arxiv    <query>            arXiv search (preprints)\n"
+              "  verify   --title \"...\"      verify across Crossref + Semantic Scholar that a reference exists and its fields are right\n"
+              "  paper    <id>               fetch one paper's details including the abstract (id: DOI:10.x/y, ARXIV:2301.12345, S2 paperId)\n"
+              "  crossref-doi <doi>          authoritative Crossref bibliographic record (DOI -> full fields)\n"
+              "  export   --doi 10.x/y --format ris|bibtex     generate a citation file (doi.org content negotiation)\n"
+              "  export   --arxiv 2301.12345 --format ris|bibtex\n"
+              "\n"
+              "Environment variables (read automatically from .env in the cwd; keys live only in .env, never in code):\n"
+              "  S2_API_KEY       optional, Semantic Scholar API key (works without one, just at a lower rate)\n"
+              "  CROSSREF_MAILTO  optional, your email (joins the Crossref polite pool, which allows a higher rate)\n"
+              "\n"
+              "All output is UTF-8 JSON (except export, which prints plain-text RIS/BibTeX).\n"},
+    "help.lang": {"zh": "輸出訊息語言(zh 或 en)，優先於環境變數 LIT_LANG",
+                  "en": "Language of the tool's messages (zh or en); takes precedence over the LIT_LANG environment variable"},
+    "help.search": {"zh": "Semantic Scholar 關鍵字搜尋", "en": "Semantic Scholar keyword search"},
+    "help.search.year": {"zh": "如 2020-2026 或 2020-", "en": "e.g. 2020-2026 or 2020-"},
+    "help.arxiv": {"zh": "arXiv 搜尋", "en": "arXiv search"},
+    "help.snowball": {"zh": "引文滾雪球：citations=誰引它(追新), references=它引誰(追經典)",
+                      "en": "Citation snowballing: citations = who cites it (newer work), references = what it cites (classics)"},
+    "help.verify": {"zh": "驗證一筆文獻(存在性+書目)", "en": "Verify one reference (existence + bibliographic fields)"},
+    "help.verify.authors": {"zh": "分號分隔，如 'Smith, J.; Chen, L.'", "en": "Semicolon-separated, e.g. 'Smith, J.; Chen, L.'"},
+    "help.verify_batch": {"zh": "一次驗證多筆引用（JSON 陣列，跨引用併行）",
+                          "en": "Verify many references at once (JSON array, run in parallel across references)"},
+    "help.verify_batch.file": {"zh": "JSON：[{title, authors?, year?, n?}, ...]",
+                               "en": "JSON: [{title, authors?, year?, n?}, ...]"},
+    "help.verify_batch.workers": {"zh": "併行數（預設 4）", "en": "Number of parallel workers (default 4)"},
+    "help.paper": {"zh": "取單篇詳細資料含摘要", "en": "Fetch the details of one paper, including the abstract"},
+    "help.batch": {"zh": "一次抓多篇詳情(id 空白分隔，最多 500 筆)",
+                   "en": "Fetch the details of many papers at once (ids separated by spaces, up to 500)"},
+    "help.batch.ids": {"zh": "DOI:10.x/y ARXIV:... 等，空白分隔", "en": "DOI:10.x/y ARXIV:... etc., separated by spaces"},
+    "help.export_xml": {"zh": "EndNote XML 匯出(research_notes/紅旗進 Research Notes 欄)",
+                        "en": "EndNote XML export (research_notes and quality flags go into the Research Notes field)"},
+    "help.export_xml.file": {"zh": "任何本工具存檔 JSON、pick 輸出檔，或直接貼 JSON 陣列",
+                             "en": "Any JSON file saved by this tool, a pick output file, or a JSON array pasted inline"},
+    "help.export_xml.indices": {"zh": "選填：只匯出這幾筆", "en": "Optional: export only these entries"},
+    "help.versions": {"zh": "preprint↔正式版解析(引用建議)", "en": "Preprint <-> published-version resolution (citation advice)"},
+    "help.versions.id": {"zh": "DOI:10.x/y | ARXIV:2301.12345 | 完整標題", "en": "DOI:10.x/y | ARXIV:2301.12345 | full title"},
+    "help.fulltext": {"zh": "查合法可取得的全文位置(Unpaywall + OA 欄位)",
+                      "en": "Find legally accessible full-text locations (Unpaywall + OA fields)"},
+    "help.fulltext.dois": {"zh": "一個或多個 DOI", "en": "One or more DOIs"},
+    "help.retract": {"zh": "查撤稿/更正記錄(Crossref update notices)",
+                     "en": "Look up retraction / correction records (Crossref update notices)"},
+    "help.retract.dois": {"zh": "一個或多個 DOI", "en": "One or more DOIs"},
+    "help.brief": {"zh": "省 token 瀏覽已存檔的結果(一行一筆，無摘要)",
+                   "en": "Token-saving browse of a saved result (one line per entry, no abstracts)"},
+    "help.pick": {"zh": "讀取 brief 選中的那幾筆完整資料", "en": "Read the full records of the entries selected with brief"},
+    "help.crossref_doi": {"zh": "DOI → Crossref 權威書目", "en": "DOI -> authoritative Crossref bibliographic record"},
+    "help.export": {"zh": "產生 RIS/BibTeX", "en": "Generate RIS/BibTeX"},
+}
+
+_T = _i18n.make_translator(MESSAGES)
+
+
+def _H(key):
+    """argparse 的 help= 會做 %-展開：只有說明文字走這裡，把 % 跳脫掉。"""
+    return _T(key).replace("%", "%%")
+
+
 S2_BASE = "https://api.semanticscholar.org/graph/v1"
 S2_FIELDS = "title,abstract,year,authors,venue,externalIds,citationCount,openAccessPdf"
 CROSSREF_BASE = "https://api.crossref.org"
@@ -42,26 +471,6 @@ OPENALEX_BASE = "https://api.openalex.org"
 
 _last_call = {}
 _rate_lock = threading.Lock()
-
-
-def load_dotenv():
-    # 先讀 cwd(專案層)，再讀 HOME(全域備援)；已設定的環境變數不覆蓋。
-    # 注意：刻意不讀 skill 目錄自己的 .env——金鑰放在 skill 資料夾會隨打包外流。
-    candidates = [os.path.join(os.getcwd(), ".env"),
-                  os.path.join(os.path.expanduser("~"), ".env")]
-    for path in candidates:
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, encoding="utf-8-sig") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-        except OSError:
-            pass
 
 
 def _reserve_slot(bucket, min_interval):
@@ -97,11 +506,13 @@ RETRYABLE_STATUS = (500, 502, 503, 504, 408, 522, 524)
 # 而且要能照著做：去哪申請、.env 要寫哪一行、程式從哪讀 .env。以前只在重試全數用完、
 # 使用者已經等了一分多鐘之後才說「長期解法是申請 key」，卻沒說去哪申請、怎麼放。
 S2_API_PAGE = "https://www.semanticscholar.org/product/api"
-S2_KEY_HINT = ("免費金鑰申請頁（Semantic Scholar 官方）：" + S2_API_PAGE + " ；"
-               "取得後在 .env 加一行：S2_API_KEY=<your key> ；"
-               "程式先讀目前資料夾的 .env，再讀 ~/.env。")
 _s2_429_warned = False
 _s2_429_seen = False     # 這個行程裡 Semantic Scholar 回過 429（不論有沒有金鑰）：main() 的 hint 靠它歸因
+
+
+def _s2_key_hint():
+    """申請金鑰的指引。每次呼叫時依 LIT_LANG 取字：以前是 import 時建好的常數，那時 .env 還沒讀。"""
+    return _T("s2.key_hint", url=S2_API_PAGE)
 
 
 def _warn_s2_429(url, will_retry=True):
@@ -116,8 +527,8 @@ def _warn_s2_429(url, will_retry=True):
     _s2_429_warned = True
     # 只在真的還會重試時才說「會自動退避重試」：最後一次嘗試的 429 接著就是 raise，
     # 說會重試是承諾程式不會做的事。
-    tail = "程式會自動退避重試。" if will_retry else "重試已用完，這次指令以 429 結束。"
-    print("Semantic Scholar 回 429（無金鑰時共享池很擠）；" + tail + S2_KEY_HINT, file=sys.stderr)
+    print(_T("s2.warn_429_retry", hint=_s2_key_hint()) if will_retry
+          else _T("s2.warn_429_final", hint=_s2_key_hint()), file=sys.stderr)
 
 
 def http_get(url, headers=None, min_interval=0.0, bucket="default",
@@ -235,18 +646,18 @@ def add_quality(e):
     now = time.localtime().tm_year
     year, cites = e.get("year"), e.get("citationCount")
     if not e.get("doi") and not e.get("arxiv"):
-        warns.append("無DOI")
+        warns.append(_T("quality.no_doi"))
     if cites is not None and year:
         age = now - year
         if cites == 0 and age >= 1:
-            warns.append("0被引(發表已滿一年)")
+            warns.append(_T("quality.zero_cites"))
         elif cites <= 3 and age >= 3:
-            warns.append("低被引(≤3)且發表逾3年")
+            warns.append(_T("quality.low_cites"))
     if not e.get("venue"):
-        warns.append("無期刊/會議名")
+        warns.append(_T("quality.no_venue"))
     vm = e.get("venue_meta") or {}
     if vm.get("type") == "journal" and vm.get("in_doaj") is False and vm.get("is_core") is False:
-        warns.append("期刊不在DOAJ也非CORE收錄，品質需人工確認")
+        warns.append(_T("quality.venue_unindexed"))
     if warns:
         e["quality_warnings"] = warns
     return e
@@ -277,7 +688,7 @@ def cmd_search(args):
         # S2 共享池壅塞時自動改用 OpenAlex(免費、額度大方、同樣有摘要/被引數)
         results = [add_quality(r) for r in openalex_search(args.query, args.limit)]
         out = {"fallback": "openalex",
-               "note": "Semantic Scholar 持續 429，已改用 OpenAlex；結果同樣可信，照常使用",
+               "note": _T("search.fallback_note"),
                "results": results}
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
@@ -401,7 +812,7 @@ def cmd_arxiv(args):
                                    s2_headers(), s2_interval(), "s2"))
         print(json.dumps({
             "fallback": "semanticscholar",
-            "note": f"export.arxiv.org 無法連線({e})，已改用 Semantic Scholar(含 arXiv 收錄)",
+            "note": _T("arxiv.fallback_note", err=e),
             "results": [norm_s2(p) for p in data.get("data") or []],
         }, ensure_ascii=False, indent=1))
 
@@ -421,7 +832,7 @@ def cmd_export_xml(args):
             entries = json.loads(args.file)
         except json.JSONDecodeError as e:
             print(json.dumps({"error": "INVALID_INPUT",
-                              "message": f"inline JSON 不合法：{e}"}, ensure_ascii=False))
+                              "message": _T("export_xml.bad_inline_json", err=e)}, ensure_ascii=False))
             sys.exit(1)
     else:
         try:
@@ -432,7 +843,7 @@ def cmd_export_xml(args):
             _, entries = _load_entries(args.file)
     bad = [i for i in (args.indices or []) if not 0 <= i < len(entries)]
     if bad:
-        print(json.dumps({"error": "INVALID_INPUT", "message": f"index 越界：{bad}",
+        print(json.dumps({"error": "INVALID_INPUT", "message": _T("common.index_out_of_range", bad=bad),
                           "available_range": f"0..{len(entries) - 1}"}, ensure_ascii=False))
         sys.exit(1)
     if args.indices:
@@ -441,7 +852,7 @@ def cmd_export_xml(args):
     entries = [e for e in entries if isinstance(e, dict)]   # 濾掉 null/字串等雜項
     if not entries:
         print(json.dumps({"error": "INVALID_INPUT",
-                          "message": "沒有可匯出的文獻物件——拒絕產生空的 XML(靜默產空檔會讓引用悄悄消失)"},
+                          "message": _T("export_xml.nothing_to_export")},
                          ensure_ascii=False))
         sys.exit(1)
 
@@ -481,7 +892,7 @@ def cmd_export_xml(args):
             styled(rec, "abstract", e["abstract"])
         notes = e.get("research_notes") or ""
         if e.get("quality_warnings"):
-            notes = (notes + "\n" if notes else "") + "品質紅旗：" + "; ".join(e["quality_warnings"])
+            notes = (notes + "\n" if notes else "") + _T("export_xml.quality_prefix") + "; ".join(e["quality_warnings"])
         if e.get("arxiv"):
             notes = (notes + "\n" if notes else "") + f"arXiv:{e['arxiv']}"
         if notes:
@@ -541,29 +952,27 @@ def _resolve_declared_doi(out, jdoi, title, pre_authors, possible):
     正式版；對不上只列為「可能」；Crossref 查無此 DOI 就記下來，不推薦改引。"""
     cand, status = _fetch_work(jdoi, out)
     if status == "not_found":
-        out["arxiv_record"]["journal_doi_status"] = (
-            "Crossref 查無此 DOI（可能打錯，或不是 Crossref 註冊的 DOI）：未當成正式版")
+        out["arxiv_record"]["journal_doi_status"] = _T("versions.jdoi.not_found")
         return
     if status == "error":
-        out["arxiv_record"]["journal_doi_status"] = "Crossref 查詢失敗，未能核對：見 crossref_error"
+        out["arxiv_record"]["journal_doi_status"] = _T("versions.jdoi.crossref_failed")
         return
     fits, ov, ts = _fits_preprint(cand, title, pre_authors)
     if _is_preprint(cand):
-        out["arxiv_record"]["journal_doi_status"] = "作者自填的 DOI 指向另一份預印本，不是正式發表"
+        out["arxiv_record"]["journal_doi_status"] = _T("versions.jdoi.is_preprint")
     elif fits:
         out["published_version"] = cand
         out["version_link"] = "arxiv_journal_ref"
     else:
         possible.append(dict(cand, basis="arxiv_declared_doi_mismatch",
                              author_overlap=ov, title_sim=ts,
-                             note="作者在 arXiv 自填的 DOI，但作者或題目與預印本對不上："
-                                  "可能是相關論文、資料集或整本論文集"))
+                             note=_T("versions.jdoi.mismatch_note")))
 
 
 def _describe(p):
     """「已有正式發表版(…)」括號裡的那段：欄位缺的時候寫「未知」，不要印 None。"""
-    return "%s, %s, DOI %s" % (p.get("container") or p.get("type") or "來源未知",
-                                p.get("year") or "年份未知", p.get("doi"))
+    return "%s, %s, DOI %s" % (p.get("container") or p.get("type") or _T("versions.unknown_source"),
+                                p.get("year") or _T("versions.unknown_year"), p.get("doi"))
 
 
 def cmd_versions(args):
@@ -603,17 +1012,15 @@ def cmd_versions(args):
                 # Crossref 查無（DataCite 的 Zenodo／OSF 之類）也不能原樣當成「已有正式發表版」。
                 cand, status = _fetch_work(pub_doi, out)
                 if status == "ok" and _is_preprint(cand):
-                    out["s2_note"] = ("S2 合併的 DOI %s 指向預印本伺服器（%s），不算正式版；改以標題與作者搜尋"
-                                      % (pub_doi, cand.get("type")))
+                    out["s2_note"] = _T("versions.s2_doi_is_preprint", doi=pub_doi, type=cand.get("type"))
                 elif status == "ok":
                     out["published_version"] = cand
                     via_s2_merge = True
                 elif status == "not_found":
-                    out["s2_note"] = ("S2 合併的 DOI %s 在 Crossref 查無（可能是 DataCite 的 DOI），"
-                                      "未當成正式版；改以標題與作者搜尋" % pub_doi)
+                    out["s2_note"] = _T("versions.s2_doi_not_in_crossref", doi=pub_doi)
                 else:
                     # 覆核失敗（逾時、5xx）：S2 的訊號仍在，採用但明說未經覆核、信心降為 medium
-                    out["published_version"] = {"doi": pub_doi, "source": "semanticscholar（未經 Crossref 覆核）"}
+                    out["published_version"] = {"doi": pub_doi, "source": _T("versions.source_unchecked")}
                     via_s2_merge = True
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -621,8 +1028,7 @@ def cmd_versions(args):
                 # S2 查無此 arXiv 記錄（新文獻的索引延遲很常見）。這是「沒有記錄」不是
                 # 「查詢失敗」：以前一併記成 s2_error，下游就把它說成「請稍後重試」並回非零；
                 # 版本鏈仍可由下面的 arXiv 標題 + Crossref 標題搜尋推定（DOI 分支早就這樣分）。
-                out["s2_note"] = ("Semantic Scholar 查無此 arXiv 記錄（HTTP 404，非查詢失敗）；"
-                                  "版本鏈改由 arXiv 標題經 Crossref 推定，無 S2 版本合併訊號佐證")
+                out["s2_note"] = _T("versions.s2_404_note")
             else:
                 out["s2_error"] = str(e)
         except OSError as e:
@@ -682,8 +1088,7 @@ def cmd_versions(args):
             print(json.dumps({
                 "query": ident,
                 "error": "UNSUPPORTED_IDENTIFIER",
-                "recommendation": ("輸入無可比對的拉丁字元(中文標題或純符號)，且不是 DOI/arXiv 編號："
-                                  "版本解析僅支援拉丁字母標題與識別碼，請改用 DOI 或 arXiv ID。"),
+                "recommendation": _T("versions.unsupported_identifier"),
             }, ensure_ascii=False, indent=1))
             sys.exit(1)
 
@@ -759,68 +1164,61 @@ def cmd_versions(args):
     errors = [k for k in ("crossref_error", "s2_error", "arxiv_error") if out.get(k)]
     if out["published_version"]:
         p = out["published_version"]
-        out["recommendation"] = "已有正式發表版(%s)，學術慣例應引正式版" % _describe(p)
+        out["recommendation"] = _T("versions.rec.published", desc=_describe(p))
         if out.get("version_link") == "input_doi_is_published":
-            out["recommendation"] = "輸入的 DOI 本身就是正式發表版(%s)，可直接引用" % _describe(p)
+            out["recommendation"] = _T("versions.rec.input_is_published", desc=_describe(p))
         elif out.get("version_link") == "arxiv_journal_ref":
-            out["confidence_note"] = ("版本連結來自 arXiv 上作者自填的期刊 DOI，且作者與題目對得上——"
-                                      "作者自己標明的正式版，不是由標題推定")
+            out["confidence_note"] = _T("versions.note.arxiv_journal_ref")
         elif via_s2_merge and p.get("source"):
             out["confidence"] = "medium"
-            out["confidence_note"] = "S2 版本合併訊號給的 DOI，但 Crossref 覆核失敗：書目未經核對，引用前請自行確認"
+            out["confidence_note"] = _T("versions.note.s2_merge_unchecked")
         elif not via_s2_merge:
             out["confidence"] = "medium"
-            out["confidence_note"] = ("版本鏈由標題相似度推定(未經 S2 版本合併訊號佐證):"
-                                      "同名標題的不同論文可能被誤配，請核對作者與年份後再改引")
+            out["confidence_note"] = _T("versions.note.title_inferred")
         if errors and out.get("version_link") != "input_doi_is_published":
             # 較強的訊號沒查到（arXiv 掛了、自填 DOI 覆核失敗）而較弱的訊號找到了：結果可用，
             # 但信心不能高於 medium，而且要說有一條路沒走完——即使信心本來就是 medium 也要說
             out["confidence"] = "medium"
-            out["confidence_note"] = ((out.get("confidence_note") or "") +
-                                      "；另有來源查詢失敗（%s），更強的版本訊號未能核對" % "、".join(errors)).lstrip("；")
+            suffix = _T("versions.note.errors_suffix", errs=_T("sep.list").join(errors))
+            prev = out.get("confidence_note")
+            # en 的 suffix 以小寫開頭（接在「; 」後面）；單獨成句時把第一個字母大寫——對中文是 no-op
+            out["confidence_note"] = (prev + _T("sep.clause") + suffix) if prev else suffix[:1].upper() + suffix[1:]
     elif errors:
-        out["recommendation"] = ("版本解析未完成——來源查詢失敗(見 *_error 欄位),"
-                                 "這不代表沒有正式發表版；請稍後重試")
+        out["recommendation"] = _T("versions.rec.incomplete")
         if out.get("possible_published_versions"):
-            out["recommendation"] += "；已找到的「可能的正式版」見 possible_published_versions"
+            out["recommendation"] += _T("versions.rec.incomplete_possible_suffix")
         print(json.dumps(out, ensure_ascii=False, indent=1))
         sys.exit(1)
     elif out.get("possible_published_versions"):
         k = len(out["possible_published_versions"])
-        out["recommendation"] = ("標題相似度沒有找到正式版，但找到 %d 筆「可能」是正式版的紀錄"
-                                 "（依據見各筆的 basis：作者自填 DOI 或作者搜尋）：請逐筆核對作者、摘要與方法，"
-                                 "確認是同一研究就改引正式版——很多期刊不接受引用 arXiv 預印本" % k)
+        out["recommendation"] = _T("versions.rec.possible", k=k)
         out["confidence"] = "low"
     elif confirmed and not title:
         # 來源證實這篇存在，但沒拿到標題，什麼都沒搜。沒搜就不能寫「搜尋查無」。
-        out["recommendation"] = ("來源有這筆記錄但沒有標題可供比對，未做任何版本搜尋："
-                                 "請改用 DOI 或自行提供完整標題再查")
+        out["recommendation"] = _T("versions.rec.no_title")
         print(json.dumps(out, ensure_ascii=False, indent=1))
         sys.exit(1)
     elif confirmed and out["arxiv"]:
         # 以前這裡說「目前引 arXiv 版合理」。但很多期刊不收 arXiv，而「查無正式版」只是
         # 這次搜尋的結果：改了標題的正式版、不註冊 DOI 的會議論文都可能沒搜到。
-        how = "標題與作者搜尋都" if author_searched else "標題搜尋"
-        out["recommendation"] = ("以%s查無正式發表版（查無 ≠ 不存在：會議論文集常不註冊 DOI，"
-                                 "改了標題的正式版也可能沒搜到）。注意很多期刊不接受引用 arXiv 預印本——"
-                                 "引用前請再確認一次，例如在 Google Scholar 看這篇的「所有版本」" % how)
+        # 兩個整句版本，不拼片語：中英文的語序不同
+        out["recommendation"] = (_T("versions.rec.not_found_title_author") if author_searched
+                                 else _T("versions.rec.not_found_title"))
         if (out.get("arxiv_record") or {}).get("journal_doi_status"):
-            out["recommendation"] += "；arXiv 上作者自填的期刊 DOI 未能採用，原因見 arxiv_record.journal_doi_status"
+            out["recommendation"] += _T("versions.rec.suffix_jdoi_unused")
     elif is_arxiv and s2_not_found and arxiv_not_found:
         # S2 與 arXiv 都回「查無」(查詢失敗會走上面的 *_error 分支)：沒有任何來源證實這個編號
         # 存在。以前會落到上一支、說「目前引 arXiv 版合理」，等於替一個可能打錯的編號背書。
         # 無法判定就不回 0——與 UNSUPPORTED_IDENTIFIER 同一條原則。
         out["error"] = "ARXIV_ID_NOT_FOUND"
-        out["recommendation"] = ("Semantic Scholar 與 arXiv API 皆查無此編號（兩者都回查無，不是查詢失敗）："
-                                 "沒有任何來源證實這篇存在，請先確認編號是否打錯；確認之前不要引用")
+        out["recommendation"] = _T("versions.rec.arxiv_id_not_found")
         print(json.dumps(out, ensure_ascii=False, indent=1))
         sys.exit(1)
     elif title_searched:
         # 標題輸入（或 DOI 輸入、Crossref 查無但 S2 給了標題）：搜過了、沒找到。不能把問題推給使用者的輸入格式。
-        out["recommendation"] = ("以標題搜尋查無正式發表版（查無 ≠ 不存在）；若這是預印本，"
-                                 "注意很多期刊不接受引用預印本，請改以 DOI 或 arXiv 編號再查一次")
+        out["recommendation"] = _T("versions.rec.title_not_found")
     else:
-        out["recommendation"] = "無法解析版本鏈，請確認輸入為 DOI:x / ARXIV:x / 完整標題"
+        out["recommendation"] = _T("versions.rec.cannot_resolve")
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
@@ -836,8 +1234,7 @@ def cmd_fulltext(args):
         doi = re.sub(r"^doi:", "", doi.strip(), flags=re.I)
         rec = {"doi": doi, "oa_locations": []}
         if not mailto:
-            rec["note"] = ("Unpaywall 要求提供聯絡 email：請在 .env 設 CROSSREF_MAILTO "
-                           "(同一個值兩邊共用)，否則只能用 S2 的 OA 欄位")
+            rec["note"] = _T("fulltext.need_mailto")
         else:
             try:
                 u = (f"https://api.unpaywall.org/v2/{urllib.parse.quote(doi, safe='/')}"
@@ -853,10 +1250,10 @@ def cmd_fulltext(args):
                         "license": loc.get("license"),
                     })
             except urllib.error.HTTPError as e:
-                rec["error"] = ("Unpaywall 查無此 DOI" if e.code == 404
-                                else f"Unpaywall 查詢失敗 HTTP {e.code}")
+                rec["error"] = (_T("fulltext.unpaywall_404") if e.code == 404
+                                else _T("fulltext.unpaywall_http", code=e.code))
             except OSError as e:
-                rec["error"] = f"Unpaywall 查詢失敗：{e}"
+                rec["error"] = _T("fulltext.unpaywall_failed", err=e)
         # 補 S2 的 OA 欄位（Unpaywall 沒收錄時仍可能有；目前沒有 OpenAlex 路徑）
         if not rec["oa_locations"]:
             try:
@@ -869,29 +1266,24 @@ def cmd_fulltext(args):
                 # 這裡以前是 pass。備援查詢失敗被吞掉之後,下面的 else 會印出
                 # 「🔒 未找到合法免費版」並教使用者去跑機構圖書館——一個根據從未
                 # 完成的查詢做出的結論。查不到和沒查到,不是同一件事。
-                rec.setdefault("error", "S2 OA 欄位備援查詢失敗：%s" % e)
+                rec.setdefault("error", _T("fulltext.s2_oa_failed", err=e))
         if rec["oa_locations"]:
-            rec["status"] = "✅ 有合法免費全文"
+            rec["status"] = _T("fulltext.status.ok")
             # Unpaywall 判 closed 但備援找到 OA 版：兩者並列會看起來矛盾，明說來源差異
             if rec.get("is_oa") is False and all(
                     l["host_type"] == "semanticscholar_oa_field" for l in rec["oa_locations"]):
-                rec["source_discrepancy"] = (
-                    "Unpaywall 回報 closed，但 Semantic Scholar 的 OA 欄位找到免費版"
-                    "(常見於機構典藏的 green OA 未被 Unpaywall 收錄)。連結可用，"
-                    "但版本可能是作者稿而非出版社排版版，引用頁碼請以出版社版為準")
+                rec["source_discrepancy"] = _T("fulltext.source_discrepancy")
         elif rec.get("error"):
-            rec["status"] = "❓ 查詢失敗(不代表沒有免費版)"
+            rec["status"] = _T("fulltext.status.failed")
         else:
-            rec["status"] = "🔒 未找到合法免費版"
+            rec["status"] = _T("fulltext.status.none")
             rec["how_to_get"] = [
-                f"https://doi.org/{doi}(出版社頁面，可能需訂閱)",
-                "透過你所在機構的圖書館取得(Google Scholar Button 的"
-                "「find full text in your university library」或圖書館 link resolver)",
-                "館際合作/文獻傳遞服務",
+                _T("fulltext.how.publisher", doi=doi),
+                _T("fulltext.how.library"),
+                _T("fulltext.how.ill"),
             ]
         out.append(rec)
-    out.append({"_note": "只回報合法可取得的位置；本工具不繞過付費牆。"
-                         "「未找到免費版」不代表拿不到全文——機構訂閱是正當且通常更完整的途徑。"})
+    out.append({"_note": _T("fulltext.note")})
     print(json.dumps(out, ensure_ascii=False, indent=1))
     checked = [r for r in out if "doi" in r]
     if checked and all(r.get("error") for r in checked):
@@ -901,6 +1293,7 @@ def cmd_fulltext(args):
 def cmd_retract(args):
     """查撤稿/更正記錄：Crossref 的 update notices(含 Retraction Watch 資料)。"""
     out = []
+    failed = []      # 每筆「這輪等於沒查」的旗標：exit code 看它，不看狀態字串的開頭
     for doi in args.dois:
         doi = doi.replace("DOI:", "").strip()
         params = {"filter": f"updates:{doi}", "rows": "5"}
@@ -953,7 +1346,7 @@ def cmd_retract(args):
                             notices.append({
                                 "type": ("expression_of_concern" if "concern" in tl
                                          else "retraction"),
-                                "label": "由標題搜尋發現（未經 Crossref updates 關聯確認）",
+                                "label": _T("retract.label.title_search"),
                                 "notice_doi": it.get("DOI"), "notice_title": t,
                                 "date": ((it.get("issued") or {}).get("date-parts")
                                          or [[None]])[0],
@@ -970,38 +1363,37 @@ def cmd_retract(args):
                           "partial_retraction", "expression_of_concern") for n in notices)
             fallback_only = notices and all(n.get("detection") == "title_search_fallback"
                                             for n in notices)
+            incomplete = False
             if severe:
-                status = ("⚠️ 疑似有撤稿/關切聲明（由標題搜尋發現，未經 updates 關聯確認）"
-                          "——請開啟 notices 中的通知確認是否指向本文"
-                          if fallback_only else "🚨 有撤稿/疑慮記錄，不可引用，詳見 notices")
+                status = (_T("retract.status.suspected") if fallback_only
+                          else _T("retract.status.retracted"))
             elif notices:
-                status = "⚠️ 有更正記錄(correction/erratum)，引用前確認更正內容"
+                status = _T("retract.status.corrected")
             elif fallback_err:
                 # 備援查詢沒跑完就不能發綠勾:notices 是空的,但那是「沒查到」
                 # 還是「沒查完」,這裡分得出來,就必須說出來。
-                status = "❓ 撤稿查詢不完整（updates 無記錄，標題搜尋備援失敗）"
+                status = _T("retract.status.incomplete")
+                incomplete = True
             else:
                 # 2010 年前的通知關聯覆蓋不佳，綠勾在此年代沒有證據力
                 yr = None
                 m = re.search(r"\b(19|20)\d{2}\b", doi)
-                status = "✅ Crossref 無已知撤稿/更正記錄"
+                status = _T("retract.status.clean")
             rec = {"doi": doi, "status": status, "notices": notices}
             if fallback_err:
                 rec["error"] = fallback_err
             if not notices:
-                rec["coverage_caveat"] = (
-                    "Crossref 的撤稿關聯對 2010 年前的文獻覆蓋不佳（部分出版社把撤稿/"
-                    "關切聲明當成獨立文章發表而未設關聯）。舊文獻的「無記錄」證據力弱，"
-                    "藥物安全等高風險引用建議另以 Retraction Watch 網站複核。")
+                rec["coverage_caveat"] = _T("retract.coverage_caveat")
             out.append(rec)
+            failed.append(incomplete)
         except OSError as e:
-            out.append({"doi": doi, "status": "❓ 查詢失敗", "error": str(e)})
-    out.append({"_note": "Crossref 撤稿覆蓋不完備(尤其非英文期刊)：無記錄 ≠ 保證沒事；"
-                         "生醫/心理領域高風險引用建議再以 Retraction Watch 網站人工複核"})
+            out.append({"doi": doi, "status": _T("retract.status.failed"), "error": str(e)})
+            failed.append(True)
+    out.append({"_note": _T("retract.note")})
     print(json.dumps(out, ensure_ascii=False, indent=1))
-    # 全部查詢失敗時給非零 exit，批次腳本才能靠 exit code 偵測「這輪等於沒查」
-    checked = [r for r in out if "doi" in r]
-    if checked and all(r["status"].startswith("❓") for r in checked):
+    # 全部查詢失敗時給非零 exit，批次腳本才能靠 exit code 偵測「這輪等於沒查」。
+    # 以前看的是狀態字串是否以 ❓ 開頭：顯示文字與控制流程綁在一起，換語言就可能斷。
+    if failed and all(failed):
         sys.exit(1)
 
 
@@ -1010,13 +1402,13 @@ def _load_entries(path):
         d = json.load(open(path, encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(json.dumps({"error": "INVALID_INPUT", "file": path,
-                          "message": f"檔案不是合法 JSON:{e}"}, ensure_ascii=False))
+                          "message": _T("load.bad_json", err=e)}, ensure_ascii=False))
         sys.exit(1)
     if isinstance(d, list):          # pick 的輸出本身就是陣列
         return {}, d
     if not isinstance(d, dict):
         print(json.dumps({"error": "INVALID_INPUT", "file": path,
-                          "message": "JSON 根層必須是物件或陣列"}, ensure_ascii=False))
+                          "message": _T("load.root_type")}, ensure_ascii=False))
         sys.exit(1)
     for key in ("results", "citations", "references", "candidates"):
         if isinstance(d.get(key), list):
@@ -1025,8 +1417,7 @@ def _load_entries(path):
     if d.get("title") or d.get("doi"):
         return d, [d]
     print(json.dumps({"error": "INVALID_INPUT", "file": path,
-                      "message": "找不到可用的文獻清單(results/citations/references/candidates)"
-                                 "，也不是單篇文獻物件"}, ensure_ascii=False))
+                      "message": _T("load.no_entries")}, ensure_ascii=False))
     sys.exit(1)
 
 
@@ -1048,7 +1439,7 @@ def cmd_pick(args):
     d, entries = _load_entries(args.file)
     bad = [i for i in args.indices if not 0 <= i < len(entries)]
     if bad:
-        print(json.dumps({"error": "INVALID_INPUT", "message": f"index 越界：{bad}",
+        print(json.dumps({"error": "INVALID_INPUT", "message": _T("common.index_out_of_range", bad=bad),
                           "available_range": f"0..{len(entries) - 1}"}, ensure_ascii=False))
         sys.exit(1)
     print(json.dumps([entries[i] for i in args.indices], ensure_ascii=False, indent=1))
@@ -1094,7 +1485,7 @@ def cmd_snowball(args):
         if d == "citations" and args.id.upper().startswith("DOI:"):
             try:
                 items = openalex_snowball(args.id[4:], d, args.limit)
-                out["citations_source"] = "openalex(按被引數排序)"
+                out["citations_source"] = _T("snowball.source_openalex")
             except OSError:
                 items = None
         if items is not None:
@@ -1110,7 +1501,7 @@ def cmd_snowball(args):
             items = [add_quality(norm_s2(x[key])) for x in data.get("data") or [] if x.get(key)]
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                out[d] = {"error": "not_found", "hint": "確認 id 格式，如 DOI:10.x/y"}
+                out[d] = {"error": "not_found", "hint": _T("snowball.not_found_hint")}
                 continue
             if e.code == 429 and args.id.upper().startswith("DOI:"):
                 items = openalex_snowball(args.id[4:], d, args.limit)
@@ -1325,10 +1716,10 @@ def derivative_signals(c, query_authors=None):
     elif page.isdigit():
         span = 1
     if span is not None and span <= 3:
-        out.append(f"候選僅 {span} 頁（{page}）——書評、讀者投書、社論等衍生條目的典型長度")
+        out.append(_T("deriv.short_pages", span=span, page=page))
     t = (c.get("type") or "").lower()
     if t in ("book-review", "peer-review", "component"):
-        out.append(f"Crossref 類型為 {t}")
+        out.append(_T("deriv.crossref_type", type=t))
     # 書評的作者欄常同時含書評人與原著作者：使用者給的作者有中，但候選第一位不是他
     if query_authors and (c.get("authors") or []):
         first = (c["authors"][0] or "")
@@ -1338,8 +1729,7 @@ def derivative_signals(c, query_authors=None):
         # 交集——但詞集合連名字都算進去，而書評人只要跟原著作者共用姓的最後一個詞，防護照樣
         # 失效，書評就被蓋章成原著。
         if named and not any(same_person(a, first) for a in named) and author_overlap(list(query_authors), c["authors"]) == 1.0:
-            out.append(f"使用者提供的作者出現在候選中，但第一作者是他人（{first}）"
-                       "——書評／評論條目的典型樣態")
+            out.append(_T("deriv.first_author_other", first=first))
     return out
 
 
@@ -1385,18 +1775,18 @@ def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False,
              "author_overlap_denominator": "user_supplied", "year_diff": yd}
     reasons = []
     if yd is not None and yd > 1:
-        reasons.append(f"年份差 {yd} 年(>1)")
+        reasons.append(_T("verdict.year_gap", yd=yd))
     if ov is not None and ov == 0.0:
         # 同名標題不同作者是最危險的假陽性：標題再像也不得判 found
-        reasons.append("使用者提供的作者無一出現在候選作者中")
+        reasons.append(_T("verdict.no_author_overlap"))
     elif authors_supplied and ov is None:
         # 使用者給了作者、候選卻沒有作者欄 → 無從比對，不得當成「作者相符」放行。
         # 這在醫學是常態陷阱：期刊的 correspondence／editorial 會原字照抄母論文
         # 標題，Crossref 標為 journal-article 而作者欄常是空的。若不擋，一筆正確的
         # 引用會被「改正」成投書的卷期頁。（與 year_supplied 同一道理，見下一條）
-        reasons.append("候選無作者資料，無法用使用者提供的作者佐證")
+        reasons.append(_T("verdict.cand_no_authors"))
     if year_supplied and yd is None:
-        reasons.append("候選無年份資料，無法用年份佐證")
+        reasons.append(_T("verdict.cand_no_year"))
     deriv = derivative_signals(candidates[0], query_authors)
     if deriv:
         # 不直接否決（真的有極短篇正式論文），但不得以 found 蓋章放行
@@ -1407,7 +1797,7 @@ def decide_verdict(candidates, *, year_supplied=False, authors_supplied=False,
     if rival is not None:
         gap = ts - rival["match"]["title_sim"]
         if gap < 0.03:
-            reasons.append(f"另有相似度僅差 {round(gap, 3)} 的不同文獻，配對有歧義")
+            reasons.append(_T("verdict.ambiguous", gap=round(gap, 3)))
             basis["ambiguous"] = True
     corroborating = sum(1 for c in candidates[1:] if same_work(candidates[0], c))
     if corroborating:
@@ -1435,9 +1825,7 @@ def verify_one(title, authors, year):
               "candidates": []}
     if not has_latin(title):
         result["verdict_hint"] = "unsupported_title"
-        result["absence_note"] = ("標題正規化後無可比對的拉丁字元（可能為中文/日文/純符號標題）："
-                                  "本工具的相似度比對僅支援拉丁字母標題，無法判定。"
-                                  "中文文獻請用 Google Scholar 或華藝等中文索引人工查核。")
+        result["absence_note"] = _T("verify.unsupported_title")
         return result
 
     def fetch_crossref():
@@ -1487,9 +1875,7 @@ def verify_one(title, authors, year):
     # 沒回答和回答沒有,是這支工具最不能混淆的兩件事。
     for name, t in threads:
         if name not in out and (name + "_error") not in out:
-            out[name + "_error"] = (
-                "查詢逾時：%d 秒內未回應（執行緒可能仍在執行，本次不採計其結果）"
-                % join_budget)
+            out[name + "_error"] = _T("verify.timeout", sec=join_budget)
 
     for name in ("crossref", "s2"):
         result["candidates"].extend(out.get(name) or [])
@@ -1506,20 +1892,17 @@ def verify_one(title, authors, year):
     if provider_errors and result["candidates"]:
         # 有候選但某個來源掛了 → 判定實際上退化成單源。這與雙源互相印證的
         # 證據強度不同，使用者必須看得出差別，不能只把錯誤埋在 *_error 欄位。
-        result["single_source_degraded"] = (
-            f"{', '.join(provider_errors)} 查詢失敗，本次判定僅根據單一來源；"
-            "證據強度低於雙源交叉，建議稍後重跑確認")
+        result["single_source_degraded"] = _T("verify.single_source",
+                                              providers=", ".join(provider_errors))
         if basis:
             if basis.get("identity_confidence") == "high":
                 basis["identity_confidence"] = "medium"
             basis["sources_degraded"] = provider_errors
     if verdict == "not_found" and provider_errors:
         verdict = "partial_failure"
-        result["absence_note"] = ("查詢未完整完成（" + ", ".join(provider_errors)
-                                  + " 見上），不可解讀為查無；請稍後重試或人工查證")
+        result["absence_note"] = _T("verify.partial_failure", providers=", ".join(provider_errors))
     elif verdict == "not_found":
-        result["absence_note"] = ("實際查核來源（Crossref + Semantic Scholar）皆無合理候選；"
-                                  "書籍章節、非英語文獻、產業論文集常不在這兩個索引中，查無 ≠ 不存在")
+        result["absence_note"] = _T("verify.not_found")
     result["verdict_hint"] = verdict
     return result
 
@@ -1540,7 +1923,7 @@ def cmd_verify_batch(args):
         items = items.get("refs") or items.get("references") or items.get("items") or []
     if not isinstance(items, list) or not items:
         print(json.dumps({"error": "INVALID_INPUT",
-                          "message": "需要一個陣列，每筆含 title（可選 authors/year/n）"},
+                          "message": _T("batch.need_array")},
                          ensure_ascii=False))
         sys.exit(1)
 
@@ -1561,8 +1944,8 @@ def cmd_verify_batch(args):
             # 「全部查完」的報告少了一列,而沒有任何地方說少了。
             if not isinstance(items[i], dict):
                 results[i] = {"verdict_hint": "invalid_entry",
-                              "error": "清單第 %d 筆不是物件（而是 %s），未查詢"
-                                       % (i + 1, type(items[i]).__name__),
+                              "error": _T("batch.entry_not_object", n=i + 1,
+                                          type=type(items[i]).__name__),
                               "raw": items[i]}
                 continue
             it = items[i]
@@ -1592,7 +1975,7 @@ def cmd_verify_batch(args):
 
 def cmd_verify(args):
     if not (args.title or "").strip():
-        print(json.dumps({"error": "INVALID_INPUT", "message": "--title 不可為空"},
+        print(json.dumps({"error": "INVALID_INPUT", "message": _T("verify.empty_title")},
                          ensure_ascii=False))
         sys.exit(1)
     authors = [a.strip() for a in (args.authors or "").split(";") if a.strip()]
@@ -1639,12 +2022,11 @@ def cmd_export(args):
             # 只有 404 才是「查無」；429/5xx 是查詢失敗，不得偽裝成文獻不存在
             if e.code == 404:
                 print(json.dumps({"error": "not_found", "arxiv": args.arxiv,
-                                  "note": "S2 未收錄此 arXiv 編號；arXiv API 亦無回應，"
-                                          "請確認編號或稍後重試"}, ensure_ascii=False))
+                                  "note": _T("export.arxiv_not_found_note")}, ensure_ascii=False))
             else:
                 print(json.dumps({"error": f"UPSTREAM_UNAVAILABLE (HTTP {e.code})",
                                   "arxiv": args.arxiv,
-                                  "note": "查詢失敗，不是查無此文獻；請稍後重試"},
+                                  "note": _T("export.upstream_unavailable_note")},
                                  ensure_ascii=False))
             sys.exit(1)
 
@@ -1675,77 +2057,82 @@ def cmd_export(args):
 # ---------- main ----------
 
 def main():
+    # 順序有意義：--lang 先寫進 LIT_LANG（旗標優先），.env 只在它仍未設（或為空）時補上，然後才建 argparse——
+    # 說明文字此時才能依語言取字。
+    sys.argv = [sys.argv[0]] + _i18n.pop_lang_arg(sys.argv[1:])
     load_dotenv()
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=_T("help.description"), formatter_class=argparse.RawDescriptionHelpFormatter)
+    # --lang 其實已被上面的預掃描取走（子命令前後都認）；加在這裡只為了讓 -h 列出它。
+    ap.add_argument("--lang", metavar="zh|en", help=_H("help.lang"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("search", help="Semantic Scholar 關鍵字搜尋")
+    p = sub.add_parser("search", help=_H("help.search"))
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=10)
-    p.add_argument("--year", help="如 2020-2026 或 2020-")
+    p.add_argument("--year", help=_H("help.search.year"))
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("arxiv", help="arXiv 搜尋")
+    p = sub.add_parser("arxiv", help=_H("help.arxiv"))
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(func=cmd_arxiv)
 
-    p = sub.add_parser("snowball", help="引文滾雪球：citations=誰引它(追新), references=它引誰(追經典)")
+    p = sub.add_parser("snowball", help=_H("help.snowball"))
     p.add_argument("id", help="DOI:10.x/y | ARXIV:2301.12345 | S2 paperId")
     p.add_argument("--direction", choices=["citations", "references", "both"], default="both")
     p.add_argument("--limit", type=int, default=15)
     p.set_defaults(func=cmd_snowball)
 
-    p = sub.add_parser("verify", help="驗證一筆文獻(存在性+書目)")
+    p = sub.add_parser("verify", help=_H("help.verify"))
     p.add_argument("--title", required=True)
-    p.add_argument("--authors", help="分號分隔，如 'Smith, J.; Chen, L.'")
+    p.add_argument("--authors", help=_H("help.verify.authors"))
     p.add_argument("--year", type=int)
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser("verify-batch", help="一次驗證多筆引用（JSON 陣列，跨引用併行）")
-    p.add_argument("file", help="JSON：[{title, authors?, year?, n?}, ...]")
-    p.add_argument("--workers", type=int, default=4, help="併行數（預設 4）")
+    p = sub.add_parser("verify-batch", help=_H("help.verify_batch"))
+    p.add_argument("file", help=_H("help.verify_batch.file"))
+    p.add_argument("--workers", type=int, default=4, help=_H("help.verify_batch.workers"))
     p.set_defaults(func=cmd_verify_batch)
 
-    p = sub.add_parser("paper", help="取單篇詳細資料含摘要")
+    p = sub.add_parser("paper", help=_H("help.paper"))
     p.add_argument("id", help="DOI:10.x/y | ARXIV:2301.12345 | S2 paperId")
     p.set_defaults(func=cmd_paper)
 
-    p = sub.add_parser("batch", help="一次抓多篇詳情(id 空白分隔，最多 500 筆)")
-    p.add_argument("ids", nargs="+", help="DOI:10.x/y ARXIV:... 等，空白分隔")
+    p = sub.add_parser("batch", help=_H("help.batch"))
+    p.add_argument("ids", nargs="+", help=_H("help.batch.ids"))
     p.set_defaults(func=cmd_batch)
 
-    p = sub.add_parser("export-xml", help="EndNote XML 匯出(research_notes/紅旗進 Research Notes 欄)")
-    p.add_argument("file", help="任何本工具存檔 JSON、pick 輸出檔，或直接貼 JSON 陣列")
-    p.add_argument("indices", nargs="*", type=int, help="選填：只匯出這幾筆")
+    p = sub.add_parser("export-xml", help=_H("help.export_xml"))
+    p.add_argument("file", help=_H("help.export_xml.file"))
+    p.add_argument("indices", nargs="*", type=int, help=_H("help.export_xml.indices"))
     p.set_defaults(func=cmd_export_xml)
 
-    p = sub.add_parser("versions", help="preprint↔正式版解析(引用建議)")
-    p.add_argument("id", help="DOI:10.x/y | ARXIV:2301.12345 | 完整標題")
+    p = sub.add_parser("versions", help=_H("help.versions"))
+    p.add_argument("id", help=_H("help.versions.id"))
     p.set_defaults(func=cmd_versions)
 
-    p = sub.add_parser("fulltext", help="查合法可取得的全文位置(Unpaywall + OA 欄位)")
-    p.add_argument("dois", nargs="+", help="一個或多個 DOI")
+    p = sub.add_parser("fulltext", help=_H("help.fulltext"))
+    p.add_argument("dois", nargs="+", help=_H("help.fulltext.dois"))
     p.set_defaults(func=cmd_fulltext)
 
-    p = sub.add_parser("retract", help="查撤稿/更正記錄(Crossref update notices)")
-    p.add_argument("dois", nargs="+", help="一個或多個 DOI")
+    p = sub.add_parser("retract", help=_H("help.retract"))
+    p.add_argument("dois", nargs="+", help=_H("help.retract.dois"))
     p.set_defaults(func=cmd_retract)
 
-    p = sub.add_parser("brief", help="省 token 瀏覽已存檔的結果(一行一筆，無摘要)")
+    p = sub.add_parser("brief", help=_H("help.brief"))
     p.add_argument("file")
     p.set_defaults(func=cmd_brief)
 
-    p = sub.add_parser("pick", help="讀取 brief 選中的那幾筆完整資料")
+    p = sub.add_parser("pick", help=_H("help.pick"))
     p.add_argument("file")
     p.add_argument("indices", nargs="+", type=int)
     p.set_defaults(func=cmd_pick)
 
-    p = sub.add_parser("crossref-doi", help="DOI → Crossref 權威書目")
+    p = sub.add_parser("crossref-doi", help=_H("help.crossref_doi"))
     p.add_argument("doi")
     p.set_defaults(func=cmd_crossref_doi)
 
-    p = sub.add_parser("export", help="產生 RIS/BibTeX")
+    p = sub.add_parser("export", help=_H("help.export"))
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--doi")
     g.add_argument("--arxiv")
@@ -1767,25 +2154,23 @@ def main():
                 u = e.filename or ""
             except Exception:
                 u = ""
-            host = urllib.parse.urlsplit(u).netloc or "上游服務"
+            host = urllib.parse.urlsplit(u).netloc or _T("cli.upstream_service")
             # 用「本行程 S2 回過 429」的旗標歸因，不用最後那個例外的主機：search 會在 S2 429 後退到
             # OpenAlex，最後拋出的是 OpenAlex 的 429，但該修的仍是 S2 金鑰。
             if _s2_429_seen and not os.environ.get("S2_API_KEY"):
-                out["hint"] = ("Semantic Scholar 共享池壅塞（重試後仍 429）。等 60–120 秒再跑同一指令；"
-                               "長期解法是申請免費 S2_API_KEY 放入 .env。" + S2_KEY_HINT)
+                out["hint"] = _T("cli.hint_429", hint=_s2_key_hint())
             elif _s2_429_seen:
-                out["hint"] = ("已設 S2_API_KEY 仍遇到 429（重試後仍 429）：這是金鑰本身的速率上限，"
-                               "不是缺金鑰；等 60–120 秒再跑同一指令，或降低 --workers")
+                out["hint"] = _T("cli.hint_429_keyed")
             else:
-                out["hint"] = "%s 回 429（速率限制，重試後仍 429）：等 60–120 秒再跑同一指令" % host
+                out["hint"] = _T("cli.hint_429_other", host=host)
         print(json.dumps(out, ensure_ascii=False))
         sys.exit(1)
     except (ValueError, ET.ParseError) as e:
         # HTTP 200 但回傳 HTML 維護頁/截斷 XML：上游壞掉不得變成 traceback,
         # 更不得被誤解為「查無」——明確標成上游回應無法解析
         print(json.dumps({"error": "UPSTREAM_UNPARSEABLE",
-                          "message": f"上游回應無法解析(可能是維護頁或截斷內容):{e}",
-                          "note": "這是查詢失敗，不是查無此文獻；請稍後重試"},
+                          "message": _T("cli.unparseable_msg", err=e),
+                          "note": _T("cli.unparseable_note")},
                          ensure_ascii=False))
         sys.exit(1)
 

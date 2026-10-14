@@ -73,7 +73,8 @@ for claim in re.findall(r"(\d+) (?:個指令|commands)", gen):
 
 # 5) 新功能是否進了所有該進的文件
 for cmd, label in (("fulltext", "全文定位"), ("versions", "版本解析"),
-                   ("export-xml", "EndNote XML"), ("retract", "撤稿")):
+                   ("export-xml", "EndNote XML"), ("retract", "撤稿"),
+                   ("LIT_LANG", "輸出語言")):
     for f in ("README.md", "README.zh-TW.md", "USAGE.md", "USAGE.zh-TW.md"):
         if cmd not in read(f):
             issues.append(f"{f} 未提及 {cmd}（{label}）")

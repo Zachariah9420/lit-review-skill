@@ -6,10 +6,14 @@ An agent skill that turns Claude (or Codex, or any capable LLM agent) into a rig
 
 Built by a grad student finishing a thesis, battle-tested on real thesis chapters. No API keys required to start.
 
-> **Before you install: the working language is Traditional Chinese.**
-> This README is English, but `SKILL.md` — the file the model actually follows — is mostly Chinese, and so is what you get back. `scripts/lit_api.py` returns its status fields in Chinese (`✅ 有合法免費全文`, `❓ 撤稿查詢不完整`, `查詢未完整完成…不可解讀為查無`), and the report templates are written in Chinese throughout.
+> **Before you install: the working language is Traditional Chinese. The script messages can be switched to English; the instructions cannot.**
+> This README is English, but `SKILL.md` — the file the model actually follows — is mostly Chinese, and so are the report templates. The two scripts (`scripts/lit_api.py`, `scripts/cite_integrity.py`) print their messages in Traditional Chinese by default (`✅ 有合法免費全文`, `❓ 撤稿查詢不完整`, `查詢未完整完成…不可解讀為查無`). Set `LIT_LANG=en` — in your environment, in `.env`, or for one run with `--lang en` — and the same messages come out in English (`✅ Legal free full text available`, `❓ Retraction check incomplete …`, `The lookup did not finish completely … must not be read as not-found`).
 >
-> What still works in English regardless: **every search is run in English** against Semantic Scholar, Crossref, arXiv and OpenAlex, and every bibliographic field comes back in the source language of the paper. So the literature layer is language-neutral; the wrapper around it is not. Claude will translate the wrapper if you ask, but nothing in the repo does that for you, and the frozen tests assert the Chinese strings.
+> What the switch changes: the explanatory text — `message`, `note` / `_note`, `recommendation`, `confidence_note`, `status`, `hint`, `absence_note`, `single_source_degraded`, `quality_warnings`, `downgrade_reasons`, `derivative_item_risk`, `journal_doi_status`, `s2_note`, `source_discrepancy`, `coverage_caveat`, `how_to_get` and `unsupported_style_note` texts, the `-h` help, and the text report of `cite_integrity.py`; also three values that look like data — `citations_source`, `label` and `published_version.source` (details in `references/api-notes.md`), which a program should not match on. What it never changes: JSON field names, `verdict_hint` values, error codes, `basis` / `version_link` values, the status emoji prefixes (✅❌❓⚠️🚨🔒) and exit codes — a program that reads only these behaves the same in both languages. The Chinese output is byte-for-byte what it was before the switch existed, except for `-h` / usage: it gains the `--lang` line, and argparse re-aligns the help columns accordingly.
+>
+> What it does **not** change: `SKILL.md`, `references/*.md` and the report templates stay Chinese. With `LIT_LANG=en` the scripts speak English, but the model is still following Chinese instructions, so its final report will usually still be Chinese, or Chinese-flavoured, unless you ask for English. That is the instructions, not a broken switch. Two smaller limits: error text that comes from an upstream service or the operating system (`*_error` / `error` fields) is passed through verbatim, so on a non-English Windows it can be in the OS language; and `quality_warnings` are written in whatever language was active when a file was produced — a JSON or EndNote file made under Chinese keeps its Chinese flags when you read it later under English.
+>
+> What still works in English regardless: **every search is run in English** against Semantic Scholar, Crossref, arXiv and OpenAlex, and every bibliographic field comes back in the source language of the paper. So the literature layer is language-neutral; of the wrapper around it, the script messages are switchable and the instructions are not. The frozen tests pin Chinese for the whole run and assert the Chinese strings; English is covered by its own cases (`I18N-*`).
 
 ## Architecture
 
@@ -143,11 +147,17 @@ The helper script is pure Python 3.8+ standard library — no pip installs, work
 Create a `.env` in your project directory:
 
 ```
-S2_API_KEY=...        # free from semanticscholar.org/product/api — avoids shared-pool 429s
-CROSSREF_MAILTO=you@example.com   # Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email)
+# free from semanticscholar.org/product/api — avoids shared-pool 429s
+S2_API_KEY=...
+# Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email)
+CROSSREF_MAILTO=you@example.com
+# optional: English script messages (default zh)
+LIT_LANG=en
 ```
 
 Never commit `.env`. The script reads it automatically (cwd first, then `~/.env`).
+
+`LIT_LANG` can also be set as an environment variable, or for a single run with `--lang en` / `--lang=en` (before or after the sub-command). Precedence: `--lang` > environment variable `LIT_LANG` > `.env` (cwd first, then `~/.env`) > default `zh`. An empty `LIT_LANG` counts as unset (`LIT_LANG` only: any other key already set in the environment, even to an empty string, is not replaced from `.env`); an unrecognised value falls back to `zh` and prints one warning on stderr. Both `lit_api.py` and `cite_integrity.py` honour it.
 
 ## Packaging for upload (ChatGPT Skills, or sharing)
 
@@ -171,8 +181,8 @@ handed to you** — a package that leaks is worse than no package.
 The honesty claims above are enforced by tests, not by good intentions:
 
 ```bash
-python evals/test_regression.py     # 119 frozen cases, no network, seconds
-python evals/mutation_check.py      # re-introduces 57 fixed bugs; each must be caught
+python evals/test_regression.py     # 132 frozen cases, no network, seconds
+python evals/mutation_check.py      # re-introduces 74 fixed bugs; each must be caught
 ```
 
 `test_regression.py` freezes every defect found so far — each case is tagged with where it came from (`TS-*` black-box stress test, `CX-*` independent Codex source review, `DR-*` design review). It calls the production functions directly with frozen candidate data, so it needs no API access and runs in seconds.

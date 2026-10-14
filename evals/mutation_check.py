@@ -47,8 +47,9 @@ MUTATIONS = [
      'c["match"].get("author_overlap") or 0.0,',
      '0,',
      ["TS-C2"]),
+    # （2026-10-14 英文模式：中文字串搬進 MESSAGES 表，錨點改指向 _T(鍵)。）
     ("移除作者零重疊的否決 → 同名不同作者被判 found", "lit_api.py",
-     'reasons.append("使用者提供的作者無一出現在候選作者中")',
+     'reasons.append(_T("verdict.no_author_overlap"))',
      'pass',
      ["TS-C1"]),
     ("docx 不解 XML 字元參照 → en-dash 範圍引用抓不到", "cite_integrity.py",
@@ -69,8 +70,8 @@ MUTATIONS = [
      '                title = title',
      ["CX-18"]),
     ("S2 404 記回 s2_error → 「查無記錄」被說成「查詢失敗請重試」並回非零", "lit_api.py",
-     'out["s2_note"] = ("Semantic Scholar 查無此 arXiv 記錄',
-     'out["s2_error"] = ("Semantic Scholar 查無此 arXiv 記錄',
+     'out["s2_note"] = _T("versions.s2_404_note")',
+     'out["s2_error"] = _T("versions.s2_404_note")',
      ["CX-18", "CX-18b"]),
     # CX-18d～g（2026-10-14）：驗證 CX-18 修正時發現的 D，以及使用者回饋的「正式版改了標題」。
     ("拿掉存在性檢查 → 兩個來源都查無的編號被說成「查無正式版」並回 0", "lit_api.py",
@@ -85,6 +86,8 @@ MUTATIONS = [
      'if jdoi and not jdoi.lower().startswith("10.48550"):',
      'if False:',
      ["CX-18f"]),
+    # 這句話現在存在於兩把鍵（not_found_title／not_found_title_author）的 zh 模板裡；兩條的換行刻意不同，
+    # 這個單行片段只出現在 CX-18g 走到的 _title_author 那一條（下面的「恰好一次」守衛會確認）。
     ("查無正式版時改回「引 arXiv 版合理」 → 很多期刊不收的預印本被背書", "lit_api.py",
      '改了標題的正式版也可能沒搜到）。注意很多期刊不接受引用 arXiv 預印本——',
      '改了標題的正式版也可能沒搜到）。目前引 arXiv 版合理——',
@@ -103,8 +106,8 @@ MUTATIONS = [
      '        if title is None:\n            entries = None\n',
      ["CX-18j"]),
     ("作者自填 DOI 的 Crossref 404 當成查詢失敗 → 不存在的 DOI 被說成請稍後重試", "lit_api.py",
-     '    if status == "not_found":\n        out["arxiv_record"]["journal_doi_status"] = (',
-     '    if False:\n        out["arxiv_record"]["journal_doi_status"] = (',
+     '    if status == "not_found":\n        out["arxiv_record"]["journal_doi_status"] = _T("versions.jdoi.not_found")',
+     '    if False:\n        out["arxiv_record"]["journal_doi_status"] = _T("versions.jdoi.not_found")',
      ["CX-18k"]),
     ("作者自填 DOI 不做作者／題目比對 → 資料集或整本論文集的 DOI 被當成正式版", "lit_api.py",
      '    elif fits:',
@@ -213,8 +216,8 @@ MUTATIONS = [
      '            if e.code == 429:\n                pass\n',
      ["CX-20a"]),
     ("最終錯誤 JSON 的 hint 不帶申請指引 → 只說「申請 key」不說去哪、怎麼放", "lit_api.py",
-     '放入 .env。" + S2_KEY_HINT)',
-     '放入 .env。")',
+     'out["hint"] = _T("cli.hint_429", hint=_s2_key_hint())',
+     'out["hint"] = _T("cli.hint_429", hint="")',
      ["CX-20a"]),
     ("打包過濾不擋 .bak → 備份檔進 ZIP", "package_skill.py",
      '\n            or BAK_RE.search(basename) is not None)',
@@ -246,8 +249,8 @@ MUTATIONS = [
      '            if True:',
      ["CX-20f"]),
     ("最後一次 429 仍說會重試 → 承諾程式不會做的事", "lit_api.py",
-     '    tail = "程式會自動退避重試。" if will_retry else "重試已用完，這次指令以 429 結束。"',
-     '    tail = "程式會自動退避重試。"',
+     '_T("s2.warn_429_retry", hint=_s2_key_hint()) if will_retry\n          else _T("s2.warn_429_final", hint=_s2_key_hint())',
+     '_T("s2.warn_429_retry", hint=_s2_key_hint())',
      ["CX-20f"]),
     ("備份目錄不剪 → scripts.bak-20261014/ 整個進 ZIP", "package_skill.py",
      '        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not should_skip(d)]',
@@ -261,6 +264,82 @@ MUTATIONS = [
      'BAK_RE = re.compile(r"\\.bak(?:$|[-._])")',
      'BAK_RE = re.compile(r"\\.bak")',
      ["CX-20b"]),
+    # I18N-*（2026-10-14 英文輸出模式）：語言解析、退回、旗標、.env、表的完整性、呼叫端漏中文、說明文字跳脫。
+    ("預設語言改成 en → 未設 LIT_LANG 的既有使用者突然拿到英文", "_i18n.py",
+     'DEFAULT = "zh"',
+     'DEFAULT = "en"',
+     ["I18N-07", "I18N-03b"]),
+    ("_T 不看語言 → LIT_LANG=en 仍印中文", "_i18n.py",
+     'tpl = entry.get(get_lang()) or entry["zh"]',
+     'tpl = entry["zh"]',
+     ["I18N-04", "I18N-05"]),
+    ("不認得的 LIT_LANG 直接拋例外 → 打錯一個值整支工具當掉，而不是退回 zh 並警告", "_i18n.py",
+     '    return DEFAULT, raw\n',
+     '    raise ValueError("unsupported LIT_LANG: %r" % (raw,))\n',
+     ["I18N-07", "I18N-08"]),
+    ("不認得的 LIT_LANG 每次呼叫都警告 → 一次指令洗出幾十行", "_i18n.py",
+     '    if bad is not None and bad not in _warned:',
+     '    if bad is not None:',
+     ["I18N-07"]),
+    ("lit_api 不預掃 --lang → 旗標失效（子命令後面的更會被 argparse 拒絕）", "lit_api.py",
+     '    sys.argv = [sys.argv[0]] + _i18n.pop_lang_arg(sys.argv[1:])\n',
+     '    pass\n',
+     ["I18N-08"]),
+    ("cite_integrity 不預掃 --lang → 旗標失效", "cite_integrity.py",
+     '    sys.argv = [sys.argv[0]] + _i18n.pop_lang_arg(sys.argv[1:])\n',
+     '    pass\n',
+     ["I18N-08"]),
+    ("cite_integrity 不讀 .env → .env 裡的 LIT_LANG 對它無效", "cite_integrity.py",
+     '    load_dotenv()\n',
+     '    pass\n',
+     ["I18N-09"]),
+    ("英文模板掉了 {desc} → 兩種語言的佔位符不一致、呼叫端傳的參數沒地方放", "lit_api.py",
+     '"en": "A published version exists ({desc}); academic convention is to cite the published version"',
+     '"en": "A published version exists; academic convention is to cite the published version"',
+     ["I18N-01", "I18N-02"]),
+    ("英文的 ❓ 狀態掉了 emoji 前綴 → 狀態前綴不再跨語言一致", "lit_api.py",
+     '"en": "❓ Retraction check incomplete',
+     '"en": "Retraction check incomplete',
+     ["I18N-01", "I18N-06"]),
+    ("訊息表少了一條英文 → 英文模式靜默退回中文", "lit_api.py",
+     '"fulltext.status.none": {"zh": "🔒 未找到合法免費版", "en": "🔒 No legal free version found"}',
+     '"fulltext.status.none": {"zh": "🔒 未找到合法免費版"}',
+     ["I18N-01", "I18N-05"]),
+    ("呼叫端把中文字面值放回程式 → 英文模式漏出中文", "lit_api.py",
+     '"message": _T("verify.empty_title")',
+     '"message": "--title 不可為空"',
+     ["I18N-02", "I18N-04"]),
+    ("說明文字不跳脫 % → 含 % 的說明會讓 argparse 的 %-展開炸掉", "lit_api.py",
+     '    return _T(key).replace("%", "%%")',
+     '    return _T(key)',
+     ["I18N-11"]),
+    # 2026-10-14 第二輪：空值等於未設、依路徑載入 _i18n。
+    # （2026-10-14 第四輪：空值規則收斂成只限 LIT_LANG，其他鍵回到 setdefault；錨點改指向整個分支，
+    #   換回單一的 setdefault 就是 b0db1e0 的全鍵 setdefault。）
+    ("load_dotenv 改回 setdefault → 殼層的 LIT_LANG=\"\" 被當成已設，.env 的 LIT_LANG=en 永遠進不來", "_i18n.py",
+     '                    if k == ENV_VAR and not os.environ.get(k):\n                        os.environ[k] = v\n'
+     '                    else:\n                        os.environ.setdefault(k, v)\n',
+     '                    os.environ.setdefault(k, v)\n',
+     ["I18N-09"]),
+    ("cite_integrity 用通用名 _i18n 登記機制模組 → 宿主已有同名模組時載入失敗、兩支腳本不再共用同一份", "cite_integrity.py",
+     '_I18N_NAME = "lit_review_i18n"',
+     '_I18N_NAME = "_i18n"',
+     ["I18N-11"]),
+    # 2026-10-14 第三輪：分開寫的 --lang ""、逐鍵中文金樣、打包器的必要檔清單。
+    ("--lang 後面接空字串也照寫 LIT_LANG → 一個空旗標把環境變數與 .env 的 en 蓋回 zh", "_i18n.py",
+     '            if argv[i + 1]:\n',
+     '            if True:\n',
+     ["I18N-08"]),
+    # 同一句「一個或多個 DOI」在 help.fulltext.dois 與 help.retract.dois 各有一份：只改其中一把，
+    # 片段金樣（zh_literals.json）照樣過——這條要靠逐鍵金樣（zh_messages.json）抓。
+    ("改掉一把鍵的中文、同一句話在另一把鍵還在 → 只靠片段金樣會放行", "lit_api.py",
+     '"help.fulltext.dois": {"zh": "一個或多個 DOI"',
+     '"help.fulltext.dois": {"zh": "一個或數個 DOI"',
+     ["I18N-03a"]),
+    ("打包器的必要檔清單漏了 _i18n.py → 沒 git add 的 _i18n.py 讓打包器照樣產出跑不起來的 ZIP", "package_skill.py",
+     '    "scripts/_i18n.py",\n',
+     '',
+     ["I18N-12"]),
 ]
 
 
@@ -303,6 +382,12 @@ def _run(root):
             if orig not in src:
                 print(f"⚠️ 跳過(找不到目標片段，程式碼已改動？):{desc}")
                 weak.append((desc, "目標片段不存在"))
+                continue
+            # 片段必須恰好出現一次：出現兩次時 replace(…, 1) 改到的是任意一份，突變「存活」會被讀成測試缺口，
+            # 其實只是改錯了地方（同一句話現在可以在兩把訊息鍵裡各出現一次）。
+            if src.count(orig) != 1:
+                print(f"⚠️ 跳過(目標片段出現 {src.count(orig)} 次，錨點不唯一):{desc}")
+                weak.append((desc, f"目標片段出現 {src.count(orig)} 次"))
                 continue
             open(target, "w", encoding="utf-8").write(src.replace(orig, mutant, 1))
             fails, _ = run_suite(root)

@@ -10,8 +10,9 @@
   2. 資料夾名稱會是 repo 名 `lit-review-skill`，但 skill 的識別名是 `lit-review`
      （SKILL.md frontmatter 的 name）——本腳本會把頂層改成 `lit-review`
 
-打包後會自動跑 evals/zip_check.py，確認沒有把金鑰、個人 email、或本機絕對
-路徑包進去。檢查沒過就不會留下 ZIP——寧可不給檔案，也不要給一個外洩的檔案。
+打包後先確認必要檔（REQUIRED）都在 ZIP 裡，再自動跑 evals/zip_check.py，確認沒有
+把金鑰、個人 email、或本機絕對路徑包進去。任一項沒過就不會留下 ZIP——寧可不給檔案，
+也不要給一個外洩、或在使用者機器上跑不起來的檔案。
 """
 import argparse
 import os
@@ -28,6 +29,17 @@ SKIP_EXT = (".pyc", ".pyo", ".zip")
 # 「.bak」要有邊界：x.bak、x.bak-20261014、x.bak.py、x.bak_c1 是備份；notes.bake.md 不是。
 # 用子字串包含會把合法檔名無聲丟掉——丟檔沒有訊息，是最糟的那一種錯。
 BAK_RE = re.compile(r"\.bak(?:$|[-._])")
+# 必要檔：腳本執行時要載入的檔案，加上 ZIP 裡的迴歸測試要讀的兩份中文金樣（I18N-03a）。
+# 清單來源是 git ls-files：新檔寫了卻忘了 git add，本地測試全綠，ZIP 卻在使用者機器上以
+# FileNotFoundError 收場，而打包器以前照樣印「打包完成」。evals/zip_check.py 有同一份清單。
+REQUIRED = (
+    "SKILL.md",
+    "scripts/lit_api.py",
+    "scripts/cite_integrity.py",
+    "scripts/_i18n.py",
+    "evals/fixtures/zh_literals.json",
+    "evals/fixtures/zh_messages.json",
+)
 
 
 def should_skip(basename):
@@ -75,7 +87,7 @@ def main():
         source = "檔案掃描"
         files_list = scan_files(REPO)
 
-    n, raw = 0, 0
+    n, raw, arcs = 0, 0, set()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for p in files_list:
             f = os.path.basename(p)
@@ -85,8 +97,17 @@ def main():
                 continue
             arc = os.path.join(SKILL_NAME, os.path.relpath(p, REPO)).replace("\\", "/")
             z.write(p, arc)
+            arcs.add(arc)
             n += 1
             raw += os.path.getsize(p)
+
+    # 必要檔檢查在「打包完成」之前：缺檔的 ZIP 不該先被宣告完成，也不該留在磁碟上被拿去上傳。
+    missing = [m for m in REQUIRED if f"{SKILL_NAME}/{m}" not in arcs]
+    if missing:
+        os.remove(out)
+        print(f"\n❌ ZIP 缺少必要檔案：{'、'.join(missing)}；已刪除 ZIP。")
+        print(f"   清單來源：{source}。用 git ls-files 打包時，最常見的原因是新檔還沒 git add；補上後重新打包。")
+        sys.exit(1)
 
     size = os.path.getsize(out)
     print(f"打包完成：{out}")

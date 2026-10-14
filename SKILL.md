@@ -19,6 +19,8 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 
 **這一條沒有降級模式。** 其他缺項可以標記後繼續，這一項不行：一份沒有經過 API 查核的「查核報告」，比沒有報告危險——它會讓使用者以為引用被驗過了。腳本不在就只能做兩件事：替使用者找出**該查哪幾筆**，並明講每一筆都還沒查。
 
+另一種情況是 `scripts/lit_api.py` 在，但同一個資料夾裡的 `scripts/_i18n.py` 不在。它是 `lit_api.py` 與 `cite_integrity.py` 共用的訊息語言機制，少了它兩支腳本一啟動就報錯（FileNotFoundError）——不是安靜的失效，但查核一樣做不了，同樣沒有降級模式。這時不要說上面那一句（`lit_api.py` 其實在），改告訴使用者：`scripts/_i18n.py` 不在，腳本一啟動就會報錯，請用上面同一個 `git clone` 指令重新取得完整版。
+
 兩件事，可單獨或一起做：
 
 - **模式 A(找文獻)**：從文章中萃取需要文獻支持的論點，搜尋學術資料庫，推薦文獻並產出 RIS/BibTeX。
@@ -64,7 +66,7 @@ description: 根據使用者的文章或論文草稿，自動用 Semantic Schola
 
 ## 輸出格式硬規則(中文報告)
 
-給使用者的中文報告、以及腳本輸出的中文訊息，**標點一律全形**(，。：；「」()!?)。理由不是美學：使用者會把報告內容複製進論文，半形標點混在中文句子裡是台灣學術寫作會被口試委員與編輯抓的格式錯誤——一個「幫人把論文做對」的工具不能自己產出不合規的文字。英文句子與程式碼、URL、DOI 內的標點保持半形。
+給使用者的中文報告、以及腳本輸出的中文訊息，**標點一律全形**(，。：；「」()!?)。理由不是美學：使用者會把報告內容複製進論文，半形標點混在中文句子裡是台灣學術寫作會被口試委員與編輯抓的格式錯誤——一個「幫人把論文做對」的工具不能自己產出不合規的文字。英文句子與程式碼、URL、DOI 內的標點保持半形。這條規則只管中文文字：腳本以英文輸出（`LIT_LANG=en`）、或使用者用英文寫作時，英文標點才是對的，不要改成全形。
 
 ## 全文取得的分工(不要越界)
 
@@ -123,9 +125,9 @@ python scripts/lit_api.py versions "ARXIV:2301.12345"                       # pr
 python scripts/lit_api.py export-xml picked.json > refs.xml                 # EndNote XML(查核筆記進 Research Notes)
 ```
 
-輸出皆為 JSON(export 為純文字)。API 細節、欄位意義、涵蓋範圍限制見 [references/api-notes.md](references/api-notes.md)——第一次用或遇到怪錯誤時讀它。
+輸出皆為 JSON(export 為純文字)。訊息文字的語言跟著 `LIT_LANG`（預設 zh；`en` 為英文；單次執行也可加 `--lang en`），但欄位名、`verdict_hint` 等判定值、錯誤碼與狀態 emoji 前綴不隨語言改變——判讀時依據這些，不要比對訊息文字。API 細節、欄位意義、涵蓋範圍限制見 [references/api-notes.md](references/api-notes.md)——第一次用或遇到怪錯誤時讀它。
 
-金鑰與 email 放 `.env`：腳本**先找 cwd 的 `.env`，再找 `~/.env`**（家目錄那份是跨專案的全域備援——在別的專案目錄工作時靠它，否則會退回無金鑰的共享池而頻繁 429）。鍵名(`S2_API_KEY`、`CROSSREF_MAILTO`)，腳本會自動讀；兩者都是選填，沒有也能跑，只是速率較低。無 S2 key 時 Semantic Scholar 常回 429，腳本會自動退避重試，連續呼叫多筆時請耐心等，不要因為慢就繞過腳本。
+金鑰與 email 放 `.env`：腳本**先找 cwd 的 `.env`，再找 `~/.env`**（家目錄那份是跨專案的全域備援——在別的專案目錄工作時靠它，否則會退回無金鑰的共享池而頻繁 429）。鍵名(`S2_API_KEY`、`CROSSREF_MAILTO`)，腳本會自動讀；兩者都是選填，沒有也能跑，只是速率較低。另一個選填鍵 `LIT_LANG`（zh 或 en，預設 zh）只決定腳本訊息的語言，不影響查核結果。無 S2 key 時 Semantic Scholar 常回 429，腳本會自動退避重試，連續呼叫多筆時請耐心等，不要因為慢就繞過腳本。
 
 ## 模式 A：找文獻
 
@@ -221,9 +223,11 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 119 個凍結案例，不打 API，秒級
-python evals/mutation_check.py      # 驗證測試本身有偵測力(57 個突變都須被抓到)
+python evals/test_regression.py     # 132 個凍結案例，不打 API，秒級
+python evals/mutation_check.py      # 驗證測試本身有偵測力(74 個突變都須被抓到)
 ```
+
+測試整輪把 `LIT_LANG` 釘在 zh（中文字串照舊逐字凍結），英文模式由 `I18N-*` 案例另外覆蓋。新增任何使用者看得到的字串，要在該腳本的 `MESSAGES` 表同時寫 zh 與 en。
 
 修了新缺陷就**在 `test_regression.py` 加一個案例**(標出處：`TS-*` 壓測 / `CX-*` 原始碼審查 / `DR-*` 設計 review)，並在 `mutation_check.py` 加對應突變——否則下一次改動可能靜默把它弄壞。測試必須呼叫生產函式(`rank_candidates`、`decide_verdict` 等),**不可在測試裡重新實作邏輯**：突變測試抓過這種假測試。
 

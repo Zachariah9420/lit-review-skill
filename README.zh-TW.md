@@ -6,9 +6,13 @@
 
 由一個趕論文的碩士生打造，在真實論文章節上實戰測試過。不需要金鑰即可使用。
 
-> **工作語言是繁體中文。** `SKILL.md` 與 `lit_api.py` 印出來的狀態欄位都是中文，英文使用者裝了之後拿到的是中文報告——這一點英文版 README 也寫了，寫在他還沒裝之前看得到的地方。
+> **工作語言是繁體中文。腳本訊息可以切成英文，指示檔不行。** `SKILL.md` 與報告範本都是中文。兩支腳本（`scripts/lit_api.py`、`scripts/cite_integrity.py`）預設印繁體中文訊息（`✅ 有合法免費全文`、`❓ 撤稿查詢不完整`、`查詢未完整完成…不可解讀為查無`）；設 `LIT_LANG=en`——環境變數、`.env`，或單次執行加 `--lang en`——同樣的訊息就改印英文（`✅ Legal free full text available`、`❓ Retraction check incomplete …`、`The lookup did not finish completely … must not be read as not-found`）。
 >
-> **但檢索一律用英文**：查詢送給 Semantic Scholar／Crossref／arXiv／OpenAlex 時走英文正規術語，回傳的書目欄位維持文獻本身的語言。所以文獻層是語言中立的，外面那層包裝不是。
+> **切換改的是**說明文字：`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note` 的文字、`-h` 說明，以及 `cite_integrity.py` 的文字報告；另有三個看起來像資料的值也會跟著變：`citations_source`、`label`、`published_version.source`（細節見 `references/api-notes.md`），程式判斷不要比對它們。**永遠不變的是**：JSON 欄位名、`verdict_hint` 值、錯誤碼、`basis`／`version_link` 值、狀態 emoji 前綴（✅❌❓⚠️🚨🔒）與離開碼——只讀這些的程式在兩種語言下行為相同。中文輸出與加入這個開關之前逐位元組相同，只有 `-h`／usage 例外：多了 `--lang` 那一行，argparse 也因此重新對齊說明欄位。
+>
+> **切換不改的是**：`SKILL.md`、`references/*.md` 與報告範本仍是中文。設了 `LIT_LANG=en`，腳本說英文，模型照的仍是中文指示，所以最後的報告通常還是中文（或帶中文味），除非使用者明講要英文。這是指示檔的語言，不是開關壞了——英文版 README 把這點寫在還沒安裝就看得到的地方。另外兩個較小的限制：來自上游服務或作業系統的錯誤文字（`*_error`／`error` 欄位）原樣轉出，在非英文版 Windows 上可能是作業系統的語言；`quality_warnings` 在產生檔案的當下就定了語言——中文模式產的 JSON 或 EndNote 檔，之後改用英文模式讀，紅旗仍是中文。
+>
+> **但檢索一律用英文**：查詢送給 Semantic Scholar／Crossref／arXiv／OpenAlex 時走英文正規術語，回傳的書目欄位維持文獻本身的語言。所以文獻層是語言中立的；外面那層包裝，腳本訊息可切換，指示檔不行。凍結測試整輪把語言釘在中文、逐字比對中文字串；英文由自己的案例（`I18N-*`）覆蓋。
 
 ## 系統架構
 
@@ -109,9 +113,15 @@ git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit
 專案目錄建 `.env`(**千萬不要 commit**，腳本自動讀取，先 cwd 後 `~/.env`):
 
 ```
-S2_API_KEY=...        # semanticscholar.org/product/api 免費申請，避開共享池 429
-CROSSREF_MAILTO=you@example.com   # 進 Crossref/OpenAlex 禮貌池；fulltext 查 Unpaywall 也必須有它
+# semanticscholar.org/product/api 免費申請，避開共享池 429
+S2_API_KEY=...
+# 進 Crossref/OpenAlex 禮貌池；fulltext 查 Unpaywall 也必須有它
+CROSSREF_MAILTO=you@example.com
+# 選填：腳本訊息改英文（預設 zh）
+LIT_LANG=en
 ```
+
+`LIT_LANG` 也可以設成環境變數，或單次執行加 `--lang en`／`--lang=en`（放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先 cwd 後 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；不認得的值退回 `zh`，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
 
 ## 打包上傳（ChatGPT Skills 或分享給別人）
 
@@ -133,8 +143,8 @@ email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給�
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 119 個凍結案例，不打網路，秒級跑完
-python evals/mutation_check.py      # 把 57 個已修的 bug 塞回去，每個都必須被抓到
+python evals/test_regression.py     # 132 個凍結案例，不打網路，秒級跑完
+python evals/mutation_check.py      # 把 74 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
 `test_regression.py` 把每個找到過的缺陷凍成案例，每個案例都標了出處(`TS-*` 黑箱壓力測試、`CX-*` Codex 獨立原始碼審查、`DR-*` 設計 review)。它直接呼叫生產程式碼並餵凍結候選資料，所以不需要 API、秒級完成。

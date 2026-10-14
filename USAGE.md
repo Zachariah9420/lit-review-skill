@@ -92,11 +92,15 @@ Commands are optional — the agent infers the mode from your input. For precise
 Works without keys, but the Semantic Scholar free pool jams at peak times. When it does, `search` and `snowball` (for DOI inputs) auto-fall-back to OpenAlex — results stay trustworthy, ranking gets slightly noisier. Citation verification (`verify` / `verify-batch`, and therefore `check`) queries only Crossref and Semantic Scholar and has **no** OpenAlex fallback: if one of the two fails, the verdict is flagged as single-source (`single_source_degraded`); if a source failed and nothing plausible was found, it is `partial_failure` (lookup incomplete, not "not found"). Create `.env` in your **project directory**, or put a copy in `~/.env` as a global fallback that works from any working directory (the script reads the current directory's `.env` first, then `~/.env`):
 
 ```
-S2_API_KEY=your-key           # free at semanticscholar.org/product/api, issued in a few business days
-CROSSREF_MAILTO=you@example.com   # joins the Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email; without it only Semantic Scholar's OA field is used)
+# free at semanticscholar.org/product/api, issued in a few business days
+S2_API_KEY=your-key
+# joins the Crossref/OpenAlex polite pools; also required by fulltext (Unpaywall needs a contact email; without it only Semantic Scholar's OA field is used)
+CROSSREF_MAILTO=you@example.com
+# optional: English script messages (default zh); --lang en does the same for a single run
+LIT_LANG=en
 ```
 
-**Never commit `.env`** (this repo's .gitignore already blocks it).
+**Never commit `.env`** (this repo's .gitignore already blocks it). `LIT_LANG` is not a key — it only picks the language of the script messages; see "Can I get English output?" in the FAQ.
 
 ## Cost control (token spend)
 
@@ -131,6 +135,13 @@ Without a key, Semantic Scholar rate-limits and the script backs off and retries
 
 **Q: Chinese-language references?**
 The academic APIs barely index them. With a Google Scholar tool available, the skill searches by the original title (marked "medium confidence"); otherwise the entry goes to the manual-check list. It will never translate a title into English and force-match — that fabricates pairings.
+
+**Q: Can I get English output?**
+From the scripts, yes. Set `LIT_LANG=en` in `.env` or in your environment, or add `--lang en` (or `--lang=en`, before or after the sub-command) to a single run. Precedence: `--lang` > environment variable `LIT_LANG` > `.env` (current directory first, then `~/.env`) > default `zh`. An empty `LIT_LANG` counts as unset (`LIT_LANG` only: any other key already set in the environment, even to an empty string, is not replaced from `.env`); case and a region suffix are ignored (`EN`, `en-US` work); any other value falls back to Chinese and prints one warning on stderr. Both `lit_api.py` and `cite_integrity.py` honour it.
+
+What changes is the explanatory text: `message`, `note` / `_note`, `recommendation`, `confidence_note`, `status`, `hint`, `absence_note`, `single_source_degraded`, `quality_warnings`, `downgrade_reasons`, `derivative_item_risk`, `journal_doi_status`, `s2_note`, `source_discrepancy`, `coverage_caveat`, `how_to_get` and `unsupported_style_note`, the `-h` help, and the `integrity` text report; also three values that look like data — `citations_source`, `label` and `published_version.source` (see `references/api-notes.md`), which a program should not match on. What stays the same in both languages: JSON field names, `verdict_hint` values, error codes, `basis` / `version_link` values, the status emoji (✅❌❓⚠️🚨🔒) and exit codes.
+
+Three limits. `SKILL.md` and the report templates are Chinese, so the report the agent writes for you will usually still be Chinese unless you ask for English — the switch is working, the instructions are simply Chinese. Error text from an upstream service or the operating system (`*_error` / `error` fields) is passed through verbatim and can be in your OS language. And `quality_warnings` keep the language they were written in: a JSON or EndNote file produced under Chinese still shows Chinese flags when read under English.
 
 **Q: A book can't be found?**
 APIs index pre-2010 books poorly and often only hit the book's *reviews* — which ironically proves the book exists. The report marks it as indirect evidence and tells you to check the ISBN.

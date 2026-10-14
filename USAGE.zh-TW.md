@@ -92,11 +92,15 @@ git clone https://github.com/Zachariah9420/lit-review-skill ~/.claude/skills/lit
 不設金鑰就能用，但 Semantic Scholar 免費共享池尖峰時段會塞車。塞車時 `search` 與 `snowball`（DOI 輸入）會自動改走 OpenAlex 備援（結果照樣可信，只是排序略噪）；引用查核（`verify`／`verify-batch`，也就是 `check`）只查 Crossref 與 Semantic Scholar，**沒有** OpenAlex 備援——其中一個來源失敗時，判定會標成單源（`single_source_degraded`）；來源失敗又沒找到合理候選時標 `partial_failure`（查詢未完成，不是查無）。在**專案目錄**建 `.env`，或放一份 `~/.env` 當跨專案的全域備援（腳本先找目前目錄的 `.env`，再找家目錄的 `~/.env`）：
 
 ```
-S2_API_KEY=你的金鑰          # semanticscholar.org/product/api 免費申請，幾個工作天核發
-CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩；fulltext 查 Unpaywall 也必須有這個 email，沒有就只剩 S2 的 OA 欄位
+# semanticscholar.org/product/api 免費申請，幾個工作天核發
+S2_API_KEY=你的金鑰
+# 進 Crossref/OpenAlex 禮貌池，更穩；fulltext 查 Unpaywall 也必須有這個 email，沒有就只剩 S2 的 OA 欄位
+CROSSREF_MAILTO=你的email
+# 選填：腳本訊息改英文（預設 zh）；單次執行加 --lang en 效果相同
+LIT_LANG=en
 ```
 
-**`.env` 千萬不要 commit 進 git**(本 repo 的 .gitignore 已擋)。
+**`.env` 千萬不要 commit 進 git**(本 repo 的 .gitignore 已擋)。`LIT_LANG` 不是金鑰，只決定腳本訊息的語言，詳見常見問題的「可以輸出英文嗎？」。
 
 ## 成本控制(token 花費)
 
@@ -131,6 +135,13 @@ CROSSREF_MAILTO=你的email    # 進 Crossref/OpenAlex 禮貌池，更穩；full
 
 **Q：中文文獻怎麼辦？**
 學術 API 幾乎不收中文文獻。環境有 Google Scholar 工具時會用原文標題盡力查(標「信心中等」)；查無或沒工具就列「需人工查核」。它不會拿英譯標題去英文庫硬配——那會產生錯誤配對。
+
+**Q：可以輸出英文嗎？**
+腳本可以。在 `.env` 或環境變數設 `LIT_LANG=en`，或單次執行加 `--lang en`（或 `--lang=en`，放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先目前目錄，再 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；大小寫與地區後綴不影響（`EN`、`en-US` 都認）；其他值一律退回中文，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
+
+改變的是說明文字：`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note`、`-h` 說明，以及 `integrity` 的文字報告；另有三個看起來像資料的值也會跟著變：`citations_source`、`label`、`published_version.source`（見 `references/api-notes.md`），程式判斷不要比對它們。兩種語言都一樣的是：JSON 欄位名、`verdict_hint` 值、錯誤碼、`basis`／`version_link` 值、狀態 emoji（✅❌❓⚠️🚨🔒）與離開碼。
+
+三個限制。`SKILL.md` 與報告範本是中文，所以 agent 寫給你的報告通常還是中文，除非你明講要英文——開關沒壞，是指示檔本身是中文。來自上游服務或作業系統的錯誤文字（`*_error`／`error` 欄位）原樣轉出，可能是作業系統的語言。`quality_warnings` 保留寫入當下的語言：中文模式產的 JSON 或 EndNote 檔，改用英文模式讀時紅旗仍是中文。
 
 **Q：專書查不到？**
 API 對專書(尤其 2010 年前)收錄很差，常只命中同名書評——書評存在反而間接證明書存在，報告會這樣標並提醒你核 ISBN。

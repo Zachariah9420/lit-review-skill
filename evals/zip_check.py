@@ -21,6 +21,17 @@ PATTERNS = [
     (re.compile(r"AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}"), "其他疑似金鑰"),
 ]
 
+# 必要檔：與 scripts/package_skill.py 的 REQUIRED 同一份清單。打包器自己會擋；這裡再擋一次，
+# 是為了不經打包器、手動壓縮的 ZIP——少了 scripts/_i18n.py，使用者那邊一跑就 FileNotFoundError。
+REQUIRED = (
+    "SKILL.md",
+    "scripts/lit_api.py",
+    "scripts/cite_integrity.py",
+    "scripts/_i18n.py",
+    "evals/fixtures/zh_literals.json",
+    "evals/fixtures/zh_messages.json",
+)
+
 z = zipfile.ZipFile(Z)
 names = z.namelist()
 hits = {}
@@ -42,12 +53,18 @@ has_pyc = any("__pycache__" in n for n in names)
 # 每一段路徑都要看：備份目錄 scripts.bak-20261014/lit_api.py 的最後一段是乾淨的檔名。
 # 邊界規則同 package_skill.BAK_RE（.bake 不算）。
 bak_files = [n for n in names if any(re.search(r"\.bak(?:$|[-._])", seg) for seg in n.split("/"))]
+# 第一段是頂層資料夾（lit-review/），比對時去掉；沒有頂層資料夾的 ZIP 也認得。
+rel = {n.split("/", 1)[1] for n in names if "/" in n} | set(names)
+missing_req = [r for r in REQUIRED if r not in rel]
 
 print(f"檔案數：{len(names)}｜壓縮後 {sum(i.compress_size for i in z.infolist())/1024:.0f} KB")
 print("含 .env：", has_env)
 print("含 .git：", has_git)
 print("含 __pycache__：", has_pyc)
 print("含 .bak 備份檔：", bool(bak_files))
+print("缺必要檔：", "、".join(missing_req) if missing_req else "無")
+if missing_req:
+    hits["缺必要檔"] = ["%s: 腳本執行或 ZIP 內的測試需要它，ZIP 裡沒有" % r for r in missing_req]
 if bak_files:
     # 備份檔是改動前的舊內容，常帶著已清掉的本機路徑或金鑰；打包器會擋，但手動壓縮的 ZIP 不會。
     hits["含 .bak 備份檔"] = ["%s: 備份檔不該出貨" % n for n in bak_files]

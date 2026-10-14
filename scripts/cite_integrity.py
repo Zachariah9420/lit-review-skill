@@ -11,13 +11,106 @@
 """
 import argparse
 import html
+import importlib.util
 import json
+import os
 import re
 import sys
 import zipfile
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+# 訊息表與翻譯機制：機制在 scripts/_i18n.py，本檔只保有自己的訊息表。依檔案路徑載入，用專屬名稱
+# 登記在 sys.modules（lit_api 與 cite_integrity 共用同一份），不動 sys.path、也不 `import _i18n`：
+# 宿主行程若已載入別的同名模組，`import _i18n` 拿到的是那一個（ImportError: cannot import name
+# load_dotenv），而把 scripts/ 插進 sys.path 會改到宿主的模組搜尋路徑。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_I18N_NAME = "lit_review_i18n"
+
+
+def _load_i18n():
+    mod = sys.modules.get(_I18N_NAME)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(_I18N_NAME, os.path.join(_HERE, "_i18n.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[_I18N_NAME] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+_i18n = _load_i18n()
+load_dotenv = _i18n.load_dotenv   # main() 經本模組的全域呼叫它（測試會替換 ci.load_dotenv）
+
+# 使用者看得到的訊息，全部在這裡：{key: {"zh": 中文（逐字保留原文）, "en": 英文}}。規則同 lit_api.py。
+MESSAGES = {
+    "err.not_docx": {
+        "zh": "{path} 不是合法的 .docx(zip)檔——副檔名可能被改過；"
+              "若原本是純文字請改回 .txt/.md 再跑",
+        "en": "{path} is not a valid .docx (zip) file - the extension may have been changed; "
+              "if it was plain text, rename it back to .txt/.md and rerun"},
+    "err.no_document_xml": {
+        "zh": "{path} 是 zip 但缺少 word/document.xml，不是 Word 文件",
+        "en": "{path} is a zip file but has no word/document.xml, so it is not a Word document"},
+    "err.not_utf8": {
+        "zh": "{path} 不是 UTF-8 文字檔(若為二進位檔請確認格式)",
+        "en": "{path} is not a UTF-8 text file (if it is a binary file, check its format)"},
+    "note.unparsable_list": {
+        "zh": "找到參考文獻標題與 {n} 個文內引用，但一筆列表條目都解析不到。"
+              "本工具的列表條目需以 [1] 或 1. / 1) 開頭；若你的列表是 Word 自動編號清單，"
+              "編號不存在於文字中因而無法解析。**無法核對，此結果不代表引用無誤**——"
+              "請把列表改為文字編號後重跑，或人工核對。",
+        "en": "Found a reference-list heading and {n} in-text citations, but could not parse a single list "
+              "entry. List entries must start with [1] or 1. / 1); if your list is a Word auto-numbered list, "
+              "the numbers are not part of the text and cannot be parsed. **This cannot be checked, and the "
+              "result does not mean the citations are correct** - convert the list to typed numbers and "
+              "rerun, or check by hand."},
+    "note.no_numeric_apa": {
+        "zh": "全文查無數字式引用([1]、[2])；偵測到 {apa} 處疑似作者-年份(APA)引用。"
+              "本工具只支援數字式引用，作者-年份格式請人工核對——**此結果不代表引用無誤**。",
+        "en": "No numeric citations ([1], [2]) were found in the text; {apa} possible author-year (APA) "
+              "citations were detected. This tool only supports numeric citations, so check author-year "
+              "formats by hand - **this result does not mean the citations are correct**."},
+    "note.no_numeric_empty": {
+        "zh": "全文查無數字式引用([1]、[2])也查無參考文獻條目；檔案可能為空、非預期格式，"
+              "或使用本工具不支援的引用樣式(如作者-年份)。**此結果不代表引用無誤**。",
+        "en": "No numeric citations ([1], [2]) and no reference-list entries were found; the file may be "
+              "empty, in an unexpected format, or use a citation style this tool does not support (such as "
+              "author-year). **This result does not mean the citations are correct**."},
+    "report.file": {"zh": "檔案：{file}", "en": "File: {file}"},
+    "report.no_heading": {
+        "zh": "⚠️ 找不到參考文獻標題(參考文獻/References…)，整份當正文處理——結果不可靠",
+        "en": "⚠️ No reference-list heading (References / Bibliography ...) found; the whole file was "
+              "treated as body text - the result is unreliable"},
+    "report.counts": {"zh": "文內引用 {cited} 個編號|列表 {listed} 筆",
+                      "en": "In-text citations: {cited} numbers | list: {listed} entries"},
+    "report.cited_not_listed": {"zh": "引了沒列：{items}", "en": "Cited but not listed: {items}"},
+    "report.listed_not_cited": {"zh": "列了沒引：{items}", "en": "Listed but not cited: {items}"},
+    "report.dup_numbers": {"zh": "列表重複編號：{items}", "en": "Duplicate numbers in the list: {items}"},
+    "report.gaps": {"zh": "列表跳號：{items}", "en": "Gaps in the list numbering: {items}"},
+    "report.none": {"zh": "無", "en": "none"},
+    "report.unparsed_tokens": {"zh": "⚠️ 無法解析的引用標記(未計入):{tokens}",
+                               "en": "⚠️ Citation markers that could not be parsed (not counted): {tokens}"},
+    "report.loose_heading": {
+        "zh": "⚠️ 參考文獻標題不是自成一行(以寬鬆比對切分)——切分點可能落錯，結果需人工確認",
+        "en": "⚠️ The reference-list heading is not on its own line (split by loose matching) - the split "
+              "point may be wrong, so confirm the result by hand"},
+    "report.verdict": {"zh": "結論：{verdict}", "en": "Verdict: {verdict}"},
+    "report.verdict.cannot_check": {"zh": "⚠️ 無法核對(見上方說明)", "en": "⚠️ Cannot be checked (see the note above)"},
+    "report.verdict.problems": {"zh": "❌ 有問題，見上", "en": "❌ Problems found, see above"},
+    "report.verdict.pass": {"zh": "✅ 三向核對全部通過", "en": "✅ All three cross-checks passed"},
+    "help.lang": {"zh": "輸出訊息語言(zh 或 en)，優先於環境變數 LIT_LANG",
+                  "en": "Language of the tool's messages (zh or en); takes precedence over the LIT_LANG environment variable"},
+}
+
+_T = _i18n.make_translator(MESSAGES)
+
+
+def _H(key):
+    """argparse 的 help= 會做 %-展開：只有說明文字走這裡，把 % 跳脫掉。"""
+    return _T(key).replace("%", "%%")
+
 
 # 要求標題自成一行(容許編號/井號前綴)：否則會被參考文獻條目標題裡的
 # "References" 一詞(如 "A. References in science.")騙走切分點
@@ -56,10 +149,9 @@ def read_text(path, as_json=False):
         except OSError as e:          # 檔案不存在/無權限：也要結構化錯誤，不要 traceback
             fail(str(e), as_json, file=path)
         except zipfile.BadZipFile:
-            fail(f"{path} 不是合法的 .docx(zip)檔——副檔名可能被改過；"
-                 "若原本是純文字請改回 .txt/.md 再跑", as_json, file=path)
+            fail(_T("err.not_docx", path=path), as_json, file=path)
         except KeyError:
-            fail(f"{path} 是 zip 但缺少 word/document.xml，不是 Word 文件", as_json, file=path)
+            fail(_T("err.no_document_xml", path=path), as_json, file=path)
         # 段落內的換行與定位點是 <w:br/> 與 <w:tab/>,不是 <w:t> 的內容。只抓
         # <w:t> 再用 "" 接起來,會讓「同一段裡用 shift+enter 分行的三筆參考文獻」
         # 黏成一行——而條目比對 REF_LINE_RE 是行首錨定的,於是只認得出第一筆,
@@ -77,7 +169,7 @@ def read_text(path, as_json=False):
     except OSError as e:
         fail(str(e), as_json, file=path)
     except UnicodeDecodeError:
-        fail(f"{path} 不是 UTF-8 文字檔(若為二進位檔請確認格式)", as_json, file=path)
+        fail(_T("err.not_utf8", path=path), as_json, file=path)
 
 
 def expand(token_group, dropped=None):
@@ -105,9 +197,13 @@ def expand(token_group, dropped=None):
 
 
 def main():
+    # 順序有意義：--lang 先寫進 LIT_LANG（旗標優先），.env 只在它仍未設（或為空）時補上，然後才建 argparse。
+    sys.argv = [sys.argv[0]] + _i18n.pop_lang_arg(sys.argv[1:])
+    load_dotenv()
     ap = argparse.ArgumentParser()
     ap.add_argument("file")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--lang", metavar="zh|en", help=_H("help.lang"))   # 已被預掃描取走；只為了 -h 列出
     args = ap.parse_args()
 
     text = read_text(args.file, args.json)
@@ -179,18 +275,10 @@ def main():
         "numbering_gaps_in_list": gaps,
     }
     if unparsable_list:
-        result["unsupported_style_note"] = (
-            f"找到參考文獻標題與 {len(cited)} 個文內引用，但一筆列表條目都解析不到。"
-            "本工具的列表條目需以 [1] 或 1. / 1) 開頭；若你的列表是 Word 自動編號清單，"
-            "編號不存在於文字中因而無法解析。**無法核對，此結果不代表引用無誤**——"
-            "請把列表改為文字編號後重跑，或人工核對。")
+        result["unsupported_style_note"] = _T("note.unparsable_list", n=len(cited))
     if no_numeric:
         result["unsupported_style_note"] = (
-            f"全文查無數字式引用([1]、[2])；偵測到 {apa_hits} 處疑似作者-年份(APA)引用。"
-            "本工具只支援數字式引用，作者-年份格式請人工核對——**此結果不代表引用無誤**。"
-            if apa_hits else
-            "全文查無數字式引用([1]、[2])也查無參考文獻條目；檔案可能為空、非預期格式，"
-            "或使用本工具不支援的引用樣式(如作者-年份)。**此結果不代表引用無誤**。")
+            _T("note.no_numeric_apa", apa=apa_hits) if apa_hits else _T("note.no_numeric_empty"))
     issues = (result["cited_not_listed"] or result["listed_not_cited"]
               or dupes or gaps or not result["refs_heading_found"] or no_numeric
               or dropped_tokens or unparsable_list)
@@ -198,22 +286,24 @@ def main():
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=1))
     else:
-        print(f"檔案：{args.file}")
+        none = _T("report.none")
+        print(_T("report.file", file=args.file))
         if no_numeric or unparsable_list:
             print("⚠️ " + result["unsupported_style_note"])
         if not result["refs_heading_found"]:
-            print("⚠️ 找不到參考文獻標題(參考文獻/References…)，整份當正文處理——結果不可靠")
-        print(f"文內引用 {len(cited)} 個編號|列表 {len(listed)} 筆")
-        print(f"引了沒列：{result['cited_not_listed'] or '無'}")
-        print(f"列了沒引：{result['listed_not_cited'] or '無'}")
-        print(f"列表重複編號：{dupes or '無'}")
-        print(f"列表跳號：{gaps or '無'}")
+            print(_T("report.no_heading"))
+        print(_T("report.counts", cited=len(cited), listed=len(listed)))
+        print(_T("report.cited_not_listed", items=result["cited_not_listed"] or none))
+        print(_T("report.listed_not_cited", items=result["listed_not_cited"] or none))
+        print(_T("report.dup_numbers", items=dupes or none))
+        print(_T("report.gaps", items=gaps or none))
         if dropped_tokens:
-            print(f"⚠️ 無法解析的引用標記(未計入):{dropped_tokens}")
+            print(_T("report.unparsed_tokens", tokens=dropped_tokens))
         if heading_mode == "loose":
-            print("⚠️ 參考文獻標題不是自成一行(以寬鬆比對切分)——切分點可能落錯，結果需人工確認")
-        print("結論：" + ("⚠️ 無法核對(見上方說明)" if no_numeric or unparsable_list
-                        else "❌ 有問題，見上" if issues else "✅ 三向核對全部通過"))
+            print(_T("report.loose_heading"))
+        print(_T("report.verdict", verdict=(
+            _T("report.verdict.cannot_check") if no_numeric or unparsable_list
+            else _T("report.verdict.problems") if issues else _T("report.verdict.pass"))))
 
     sys.exit(1 if issues else 0)
 
