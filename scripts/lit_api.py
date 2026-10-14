@@ -79,8 +79,8 @@ MESSAGES = {
               "the retries are used up, so this command ends with 429. {hint}"},
     # ---- 品質紅旗（quality_warnings；寫入檔案與 EndNote Research Notes，語言在寫入當下決定）----
     "quality.no_doi": {"zh": "無DOI", "en": "No DOI"},
-    "quality.zero_cites": {"zh": "0被引(發表已滿一年)", "en": "0 citations (published in an earlier calendar year)"},
-    "quality.low_cites": {"zh": "低被引(≤3)且發表逾3年",
+    "quality.zero_cites": {"zh": "0被引(發表年份早於今年)", "en": "0 citations (published in an earlier calendar year)"},
+    "quality.low_cites": {"zh": "低被引(≤3)且發表年份距今3年以上",
                           "en": "Low citations (<=3) and published 3 or more calendar years ago"},
     "quality.no_venue": {"zh": "無期刊/會議名", "en": "No journal/conference name"},
     "quality.venue_unindexed": {
@@ -993,6 +993,7 @@ def cmd_versions(args):
     # 自己的紀錄，拿它的 DOI 當「S2 合併訊號」會把純靠標題推定的版本說成有合併佐證。
     confirmed = False                  # 有任何來源回了這個識別碼的記錄
     via_s2_merge = False               # 正式版是 S2 版本合併給的
+    s2_merge_unchecked = False         # 而且 Crossref 覆核失敗（逾時、5xx）：書目沒核對過
     s2_not_found = arxiv_not_found = False
     possible = []
     if is_arxiv:
@@ -1022,6 +1023,7 @@ def cmd_versions(args):
                     # 覆核失敗（逾時、5xx）：S2 的訊號仍在，採用但明說未經覆核、信心降為 medium
                     out["published_version"] = {"doi": pub_doi, "source": _T("versions.source_unchecked")}
                     via_s2_merge = True
+                    s2_merge_unchecked = True
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 s2_not_found = True
@@ -1169,7 +1171,9 @@ def cmd_versions(args):
             out["recommendation"] = _T("versions.rec.input_is_published", desc=_describe(p))
         elif out.get("version_link") == "arxiv_journal_ref":
             out["confidence_note"] = _T("versions.note.arxiv_journal_ref")
-        elif via_s2_merge and p.get("source"):
+        elif s2_merge_unchecked:
+            # 只有覆核失敗的那一支設這個旗標。以前用 p.get("source") 判斷，但覆核成功時正式版是
+            # norm_crossref 的記錄、source 恆為 "crossref"：最強的訊號反被降成 medium，還說覆核失敗。
             out["confidence"] = "medium"
             out["confidence_note"] = _T("versions.note.s2_merge_unchecked")
         elif not via_s2_merge:

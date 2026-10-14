@@ -1,5 +1,5 @@
 {
- "_comment": "Golden snapshot for case I18N-03a: every CJK string literal that scripts/lit_api.py and scripts/cite_integrity.py contained BEFORE the message tables were introduced (commit b0db1e0; scanner = evals/test_regression.py:_stray_cjk_literals, i.e. appendix A of the English-mode design). Each fragment, split at %s/%d, must still occur verbatim in the zh side of MESSAGES. Static file: it is a snapshot of the pre-change tree, not something make_fixtures.py can regenerate.",
+ "_comment": "Golden snapshot for case I18N-03a: every CJK string literal that scripts/lit_api.py and scripts/cite_integrity.py contained BEFORE the message tables were introduced (commit b0db1e0; scanner = evals/test_regression.py:_stray_cjk_literals, i.e. appendix A of the English-mode design). Each fragment, split at %s/%d, must still occur verbatim in the zh side of MESSAGES. Static file, not something make_fixtures.py can regenerate: the inventory is updated only when a zh string is changed on purpose, in the same commit as that change, never to make a case pass (so far: the two citation-age flags quality.zero_cites and quality.low_cites, reworded to say calendar years).",
  "lit_api.py": [
   " 年(>1)",
   " 查詢失敗，本次判定僅根據單一來源；證據強度低於雙源交叉，建議稍後重跑確認",
@@ -11,7 +11,7 @@
   "(出版社頁面，可能需訂閱)",
   ")，已改用 Semantic Scholar(含 arXiv 收錄)",
   "--title 不可為空",
-  "0被引(發表已滿一年)",
+  "0被引(發表年份早於今年)",
   "Crossref 撤稿覆蓋不完備(尤其非英文期刊)：無記錄 ≠ 保證沒事；生醫/心理領域高風險引用建議再以 Retraction Watch 網站人工複核",
   "Crossref 查無此 DOI（可能打錯，或不是 Crossref 註冊的 DOI）：未當成正式版",
   "Crossref 查詢失敗，未能核對：見 crossref_error",
@@ -62,7 +62,7 @@
   "以%s查無正式發表版（查無 ≠ 不存在：會議論文集常不註冊 DOI，改了標題的正式版也可能沒搜到）。注意很多期刊不接受引用 arXiv 預印本——引用前請再確認一次，例如在 Google Scholar 看這篇的「所有版本」",
   "以標題搜尋查無正式發表版（查無 ≠ 不存在）；若這是預印本，注意很多期刊不接受引用預印本，請改以 DOI 或 arXiv 編號再查一次",
   "任何本工具存檔 JSON、pick 輸出檔，或直接貼 JSON 陣列",
-  "低被引(≤3)且發表逾3年",
+  "低被引(≤3)且發表年份距今3年以上",
   "作者在 arXiv 自填的 DOI，但作者或題目與預印本對不上：可能是相關論文、資料集或整本論文集",
   "作者自填的 DOI 指向另一份預印本，不是正式發表",
   "併行數（預設 4）",

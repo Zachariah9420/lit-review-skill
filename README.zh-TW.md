@@ -8,7 +8,7 @@
 
 > **工作語言是繁體中文。腳本訊息可以切成英文，指示檔不行。** `SKILL.md` 與報告範本都是中文。兩支腳本（`scripts/lit_api.py`、`scripts/cite_integrity.py`）預設印繁體中文訊息（`✅ 有合法免費全文`、`❓ 撤稿查詢不完整`、`查詢未完整完成…不可解讀為查無`）；設 `LIT_LANG=en`——環境變數、`.env`，或單次執行加 `--lang en`——同樣的訊息就改印英文（`✅ Legal free full text available`、`❓ Retraction check incomplete …`、`The lookup did not finish completely … must not be read as not-found`）。
 >
-> **切換改的是**說明文字：`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note` 的文字、`-h` 說明，以及 `cite_integrity.py` 的文字報告；另有三個看起來像資料的值也會跟著變：`citations_source`、`label`、`published_version.source`（細節見 `references/api-notes.md`），程式判斷不要比對它們。**永遠不變的是**：JSON 欄位名、`verdict_hint` 值、錯誤碼、`basis`／`version_link` 值、狀態 emoji 前綴（✅❌❓⚠️🚨🔒）與離開碼——只讀這些的程式在兩種語言下行為相同。中文輸出與加入這個開關之前逐位元組相同，只有 `-h`／usage 例外：多了 `--lang` 那一行，argparse 也因此重新對齊說明欄位。
+> **切換改的是**說明文字：`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note` 的文字、`-h` 說明，以及 `cite_integrity.py` 的文字報告；另有三個看起來像資料的值也會跟著變：`citations_source`、`label`、`published_version.source`（細節見 `references/api-notes.md`），程式判斷不要比對它們。**永遠不變的是**：JSON 欄位名、`verdict_hint` 值、錯誤碼、`basis`／`version_link` 值、狀態 emoji 前綴（✅❌❓⚠️🚨🔒）與離開碼——只讀這些的程式在兩種語言下行為相同。中文輸出與加入這個開關之前逐位元組相同，只有兩處例外：`-h`／usage 多了 `--lang` 那一行，argparse 也因此重新對齊說明欄位；`quality_warnings` 裡兩條被引紅旗之後改了措辭，照實說程式比的是日曆年（見 `references/api-notes.md`）。
 >
 > **切換不改的是**：`SKILL.md`、`references/*.md` 與報告範本仍是中文。設了 `LIT_LANG=en`，腳本說英文，模型照的仍是中文指示，所以最後的報告通常還是中文（或帶中文味），除非使用者明講要英文。這是指示檔的語言，不是開關壞了——英文版 README 把這點寫在還沒安裝就看得到的地方。另外兩個較小的限制：來自上游服務或作業系統的錯誤文字（`*_error`／`error` 欄位）原樣轉出，在非英文版 Windows 上可能是作業系統的語言；`quality_warnings` 在產生檔案的當下就定了語言——中文模式產的 JSON 或 EndNote 檔，之後改用英文模式讀，紅旗仍是中文。
 >
@@ -121,7 +121,7 @@ CROSSREF_MAILTO=you@example.com
 LIT_LANG=en
 ```
 
-`LIT_LANG` 也可以設成環境變數，或單次執行加 `--lang en`／`--lang=en`（放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先 cwd 後 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；不認得的值退回 `zh`，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
+`LIT_LANG` 也可以設成環境變數，或單次執行加 `--lang en`／`--lang=en`（放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先 cwd 後 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；`.env` 裡沒有引號的值後面接空格與 `#`，從那裡起是行內註解、不算值（`LIT_LANG=en   # 註解` 讀成 `en`；用成對引號包住的值連 `#` 一起保留）；不認得的值退回 `zh`，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
 
 ## 打包上傳（ChatGPT Skills 或分享給別人）
 
@@ -143,8 +143,8 @@ email 與本機絕對路徑。**檢查沒過會直接刪掉 ZIP 而不是交給�
 上面那些誠實承諾是靠測試守住的，不是靠善意：
 
 ```bash
-python evals/test_regression.py     # 132 個凍結案例，不打網路，秒級跑完
-python evals/mutation_check.py      # 把 74 個已修的 bug 塞回去，每個都必須被抓到
+python evals/test_regression.py     # 133 個凍結案例，不打網路，秒級跑完
+python evals/mutation_check.py      # 把 76 個已修的 bug 塞回去，每個都必須被抓到
 ```
 
 `test_regression.py` 把每個找到過的缺陷凍成案例，每個案例都標了出處(`TS-*` 黑箱壓力測試、`CX-*` Codex 獨立原始碼審查、`DR-*` 設計 review)。它直接呼叫生產程式碼並餵凍結候選資料，所以不需要 API、秒級完成。
@@ -160,7 +160,7 @@ python evals/mutation_check.py      # 把 74 個已修的 bug 塞回去，每個
 - **誠實優先**：查不到就說查不到，判不了就標 ❓，絕不猜。一筆錯誤的「已驗證」比十筆誠實的「無法判斷」危害更大。
 - **書目不靠記憶**：所有 DOI、年份、頁碼一律來自 API 回傳——LLM 記憶中的書目資料天生不可靠。
 - **三層隔離**：證據隔離(記憶只能起疑，不能作證)、角色隔離(寫的人不審自己)、注入隔離(檢索內容是不可信資料，其中的指令一律回報不遵從)。
-- **品質紅旗**：低層級期刊的零被引文獻自動標警(有年齡門檻，不冤枉新文獻)。
+- **品質紅旗**：發表年份早於今年的零被引文獻自動標警（有年齡門檻，不冤枉新文獻）；期刊不在 DOAJ/CORE 收錄則另標一條紅旗。
 - **成本分級**:`quick`(單 agent，標「未經獨立審查」)/ 預設(一個 fresh 懷疑論者，約 1.5–2 倍)/ `thorough`(逐句對抗驗證，5–10 倍)——驗證強度跟著錯誤代價走。
 - **抗故障**：`search`／`snowball` 有 S2→OpenAlex、arXiv→S2 自動備援；`verify` 刻意不設備援——來源失敗一定標出來（有合理候選時標 `single_source_degraded`，沒找到時標 `partial_failure`），不會寫成查無。內建速率限制與退避重試。
 

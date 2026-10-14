@@ -243,6 +243,12 @@ MUTATIONS = [
      '                    fetch_err = fetch_err or e',
      '                    raise',
      ["CX-20e"]),
+    # CX-21（2026-10-14）：「Crossref 覆核失敗」以前從 published_version 有沒有 source 欄位去推，但覆核成功的
+    # norm_crossref 記錄 source 恆為 "crossref"。改成只有覆核失敗那一支會設的旗標；把舊判斷放回去就是這個缺陷。
+    ("「覆核失敗」改回看 source 欄位 → Crossref 覆核成功的 S2 合併正式版被降成 medium、還說覆核失敗", "lit_api.py",
+     '        elif s2_merge_unchecked:\n',
+     '        elif via_s2_merge and p.get("source"):\n',
+     ["CX-21"]),
     # CX-20f／CX-20b 補強（2026-10-14 反駁者）：hint 要看主機與金鑰、重試措辭要誠實、.bak 目錄與邊界。
     ("429 的 hint 不看主機與金鑰 → Crossref 的 429 也叫人去申請 S2 金鑰", "lit_api.py",
      '            if _s2_429_seen and not os.environ.get("S2_API_KEY"):',
@@ -340,6 +346,11 @@ MUTATIONS = [
      '    "scripts/_i18n.py",\n',
      '',
      ["I18N-12"]),
+    # 2026-10-14 第五輪：.env 的行內註解比照 python-dotenv 剝掉（沒有引號的值）；拿掉剝除就是這個缺陷。
+    ("load_dotenv 不剝行內註解 → LIT_LANG=en   # 註解 讀成「en   # 註解」，輸出悄悄退回中文；金鑰帶著註解送出", "_i18n.py",
+     'v = re.sub(r"\\s+#.*", "", v).rstrip()',
+     'v = v',
+     ["I18N-09"]),
 ]
 
 

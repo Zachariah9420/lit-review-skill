@@ -223,8 +223,8 @@ python scripts/lit_api.py export-xml picked.json > refs.xml                 # En
 腳本的比對邏輯有真實的假陽性歷史(中文標題塌縮、作者全錯仍判 found)。**改動 `scripts/` 後，交付前一定跑**:
 
 ```bash
-python evals/test_regression.py     # 132 個凍結案例，不打 API，秒級
-python evals/mutation_check.py      # 驗證測試本身有偵測力(74 個突變都須被抓到)
+python evals/test_regression.py     # 133 個凍結案例，不打 API，秒級
+python evals/mutation_check.py      # 驗證測試本身有偵測力(76 個突變都須被抓到)
 ```
 
 測試整輪把 `LIT_LANG` 釘在 zh（中文字串照舊逐字凍結），英文模式由 `I18N-*` 案例另外覆蓋。新增任何使用者看得到的字串，要在該腳本的 `MESSAGES` 表同時寫 zh 與 en。

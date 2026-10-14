@@ -1128,6 +1128,8 @@ def test_versions_round3():
     p：只剩一個字母的作者名（「J.」）沒有鑑別力，作者重疊回 None 而不是 1.0。
     （CX-20d／e 也放在這裡：d 第一、第二作者在發表時對調，只有第二作者的查詢找得到正式版；
     e 一位作者的查詢失敗時，另一位的結果不丟、失敗如實回報。）
+    （CX-21 也放在這裡：S2 合併的 DOI 經 Crossref 覆核成功時，信心不得被降成 medium、不得附「覆核失敗」說明；
+    覆核失敗那一支——medium＋「未經覆核」說明——由 CX-19f 的 5xx 案釘住。）
     不連網：http_get 只回應明確列出的端點，其餘記成外洩並讓案例失敗。"""
     import contextlib
     import io
@@ -1398,6 +1400,21 @@ def test_versions_round3():
           exc is None and got == ["10.1000/widget.2025.7"] and queried == ["chen", "okafor"]
           and "逾時" in (d.get("crossref_error") or ""),
           f"exc={exc} exit={code} found={got} queried={queried} crossref_error={d.get('crossref_error')!r}")
+
+    # CX-21：S2 合併的 DOI 經 Crossref 覆核成功（期刊論文）——四層訊號裡最強的一種。以前 confidence 分支用
+    # p.get("source") 判斷「覆核失敗」，但覆核成功時正式版是 norm_crossref 的記錄、source 恆為 "crossref"，
+    # 於是被降成 medium、還附「Crossref 覆核失敗：書目未經核對」。覆核失敗那一支（medium＋未經覆核的說明）
+    # 由 CX-19f 的 5xx 案釘住，這裡只釘成功的那一支。
+    code, exc, d = run("ARXIV:2410.01234", s2=dict(w_s2, doi="10.1000/widget.2025.7"), arxiv=[w_pre],
+                       works={"10.1000/widget.2025.7": w_msg})
+    pv = d.get("published_version") or {}
+    note = d.get("confidence_note") or ""
+    check("CX-21", "S2 合併的 DOI 經 Crossref 覆核成功時，正式版取 Crossref 書目，信心維持預設（不降為 medium）、不附「覆核失敗」說明",
+          exc is None and code == 0 and pv.get("doi") == "10.1000/widget.2025.7" and pv.get("source") == "crossref"
+          and pv.get("container") == "Journal of Widget Research" and "confidence" not in d
+          and "覆核" not in note and d.get("version_link") is None and not d.get("crossref_error"),
+          f"exc={exc} exit={code} pv={pv.get('doi')!r}/{pv.get('source')!r} confidence={d.get('confidence')!r} "
+          f"note={note[:30]!r} link={d.get('version_link')!r}")
 
 
 def test_hygiene_cx20():
@@ -1804,10 +1821,11 @@ def test_i18n_callsites():
 
 def test_i18n_zh_frozen():
     """I18N-03：中文一個字都沒變——(1) 改動前掃描器列出的每個中文字串片段都還在 zh 表裡（evals/fixtures/zh_literals.json
-    是改動前那棵樹的快照）；(1b) 逐鍵金樣 evals/fixtures/zh_messages.json（{腳本: {鍵: zh}}）：金樣裡每把鍵都在表裡、
-    zh 一字不差，表裡每把鍵也都在金樣裡。片段檢查只問「這段字還在某處」，同一句話在兩把鍵各有一份時改掉其中一把照樣過；
-    逐鍵比對補這個洞。新增一把鍵卻沒同步更新金樣會在這裡大聲失敗——這是刻意的：中文輸出的任何增減，
-    都要有人在同一個 commit 裡明確寫進金樣；(2) LIT_LANG 未設／zh／zh-TW／ZH 的 stdout 位元組相同、stderr 為空。"""
+    是改動前那棵樹的快照；只有刻意改某段中文時才在同一個 commit 裡同步更新，例如兩條被引紅旗改成照實說年份）；
+    (1b) 逐鍵金樣 evals/fixtures/zh_messages.json（{腳本: {鍵: zh}}）：金樣裡每把鍵都在表裡、zh 一字不差，
+    表裡每把鍵也都在金樣裡。片段檢查只問「這段字還在某處」，同一句話在兩把鍵各有一份時改掉其中一把照樣過；逐鍵比對補這個洞。
+    新增一把鍵卻沒同步更新金樣會在這裡大聲失敗——這是刻意的：中文輸出的任何增減，都要有人在同一個 commit 裡明確寫進金樣；
+    (2) LIT_LANG 未設／zh／zh-TW／ZH 的 stdout 位元組相同、stderr 為空。"""
     ci = _ci()
     golden = json.load(open(fixture("zh_literals.json"), encoding="utf-8"))
     missing = []
@@ -2430,8 +2448,9 @@ def test_i18n_dotenv():
     cwd 沒有就退到 ~/.env；空值 LIT_LANG= 視為未設。子行程的 HOME／USERPROFILE 指向空的暫存目錄，開發者真正的 ~/.env 插不進來。
     空值規則只限 LIT_LANG：其他鍵維持「已設就不覆蓋」——殼層的 S2_API_KEY="" 不被 cwd .env 的值補上
     （行程內呼叫 la.load_dotenv，cwd 與 HOME／USERPROFILE 都指向暫存目錄，跑完還原）。
-    文件範例也是閘門：四份文件（README／USAGE，中英）裡含 S2_API_KEY= 與 LIT_LANG= 的 .env 範例區塊原樣載入——
-    load_dotenv 不剝行尾註解，註解接在值後面會讓 LIT_LANG 變成 "en   # …"，所以範例的註解必須獨佔一行。"""
+    文件範例也是閘門：四份文件（README／USAGE，中英）裡含 S2_API_KEY= 與 LIT_LANG= 的 .env 範例區塊原樣載入。
+    行內註解比照 python-dotenv：沒有引號的值從第一個「空白 + #」起是註解（LIT_LANG=en   # c → en、S2_API_KEY=abc # x → abc）；
+    成對引號包住的值原樣保留，含 #（CROSSREF_MAILTO="a@b.c # keep" → a@b.c # keep）。以前不剝，LIT_LANG 變成 "en   # c"。"""
     import shutil
     en_msg, zh_msg = _t(la, "en", "verify.empty_title"), _t(la, "zh", "verify.empty_title")
     ci = _ci()
@@ -2504,10 +2523,9 @@ def test_i18n_dotenv():
                 else:
                     os.environ[k] = v
         pin_ok = pin == ("", "fromdotenv")
-        # 文件範例即閘門：四份文件各自含 S2_API_KEY= 與 LIT_LANG= 的 ``` 區塊，原樣寫成 .env 載入。load_dotenv 不剝
-        # 行尾註解（只剝頭尾空白與一層引號），範例若把註解接在值後面，LIT_LANG 會變成 "en   # optional…"（被當成不支援的
-        # 語言、輸出退回中文），金鑰也帶雜訊，所以註解必須獨佔一行。行程內呼叫，cwd 與 HOME／USERPROFILE 都指向空的暫存
-        # 目錄，LIT_LANG／S2_API_KEY／CROSSREF_MAILTO 先移除，跑完還原。
+        # 文件範例即閘門：四份文件各自含 S2_API_KEY= 與 LIT_LANG= 的 ``` 區塊，原樣寫成 .env 載入：LIT_LANG 要是 en，
+        # 金鑰與信箱不得缺、不得帶 #（行內註解會被剝掉，但緊貼在值後面、前面沒有空白的 # 仍算值的一部分）。
+        # 行程內呼叫，cwd 與 HOME／USERPROFILE 都指向空的暫存目錄，LIT_LANG／S2_API_KEY／CROSSREF_MAILTO 先移除，跑完還原。
         doc_home = os.path.join(root, "doc_home")
         os.makedirs(doc_home)
 
@@ -2566,6 +2584,14 @@ def test_i18n_dotenv():
                 doc_res[doc] = "ok"
         doc_ok = len(doc_res) == 4 and all(v == "ok" for v in doc_res.values())
         doc_detail = "；".join(f"{d}:{r}" for d, r in doc_res.items())
+        # 行內註解（比照 python-dotenv）：沒有引號的值從第一個「空白 + #」起是註解；成對引號包住的值原樣保留（含 #）。
+        # 以前整段都當成值：LIT_LANG 讀成 "en   # c"（不認得的語言，輸出悄悄退回中文），金鑰帶著註解送出去。
+        inline_cwd = os.path.join(root, "inline")
+        os.makedirs(inline_cwd)
+        with open(os.path.join(inline_cwd, ".env"), "w", encoding="utf-8") as f:
+            f.write('LIT_LANG=en   # c\nS2_API_KEY=abc # x\nCROSSREF_MAILTO="a@b.c # keep"\n')
+        inline = load_doc_env(inline_cwd)
+        inline_ok = inline == {"LIT_LANG": "en", "S2_API_KEY": "abc", "CROSSREF_MAILTO": "a@b.c # keep"}
         ok = (msg(o1) == en_msg and not e1 and json.loads(o2).get("unsupported_style_note") == en_note
               and msg(o3) == zh_msg and msg(o4) == en_msg
               and json.loads(o5).get("unsupported_style_note") == en_note
@@ -2575,13 +2601,15 @@ def test_i18n_dotenv():
               "cwd 沒有就退到 ~/.env；LIT_LANG= 空值視為未設且不警告；都沒有就是 zh；"
               "殼層的 LIT_LANG=\"\" 擋不住 .env、--lang= 等於沒給旗標（兩支腳本）；空值規則只限 LIT_LANG："
               "殼層的 S2_API_KEY=\"\" 仍算已設、不被 .env 補上；"
-              "四份文件的 .env 範例原樣載入：LIT_LANG=en 生效、金鑰與信箱不帶 #（行尾註解不被剝除，範例註解不得接在值後面）",
-              ok and empty_ok and pin_ok and doc_ok,
+              "四份文件的 .env 範例原樣載入：LIT_LANG=en 生效、金鑰與信箱不帶 #；"
+              "行內註解比照 python-dotenv：LIT_LANG=en   # c → en、S2_API_KEY=abc # x → abc、引號裡的 # 原樣保留",
+              ok and empty_ok and pin_ok and doc_ok and inline_ok,
               f"cwd.env={msg(o1)!r}/{str(json.loads(o2).get('unsupported_style_note'))[:20]!r} env>file={msg(o3)!r} "
               f"home={msg(o4)!r} empty={msg(o6)!r}（stderr={e6[:40]!r}） none={msg(o7)!r} "
               f"空值不擋={empty_ok}（{msg(o8)!r}/{str(note(o9))[:20]!r}/{msg(o10)!r}/{str(note(o11))[:20]!r}）"
               f" 其他鍵不補={pin_ok}（{pin!r}）"
-              f" 文件範例={doc_ok}（{doc_detail}）")
+              f" 文件範例={doc_ok}（{doc_detail}）"
+              f" 行內註解={inline_ok}（{inline!r}）")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

@@ -3,6 +3,8 @@
 
 兩支腳本各自保有自己的 MESSAGES 表（{key: {"zh": ..., "en": ...}}），這裡只放機制：
   * load_dotenv()      讀 cwd 的 .env、再讀 ~/.env（已設的環境變數不覆蓋；唯一例外是 LIT_LANG：它的空值視為未設，由 .env 補上）。
+                       行內註解比照 python-dotenv：沒有引號的值，從第一個「空白 + #」起是註解（LIT_LANG=en   # 註 → en）；
+                       整個值用成對的單引號或雙引號包住時，引號裡的一切（含 #）原樣保留，只去掉引號。
   * normalize()/get_lang()  LIT_LANG → "zh" 或 "en"；空值視為未設；不認得的值退回 zh，
                        並在 stderr 印一次 ASCII 警告（每個行程只印一次）。
   * pop_lang_arg()     把 argv 裡的 --lang X / --lang=X 取出並寫進 LIT_LANG（旗標優先於環境變數與 .env）；
@@ -18,6 +20,7 @@ LIT_LANG 的空值在每一層都視為未設：殼層的 LIT_LANG=""（POSIX �
 與加入英文模式之前相同。
 """
 import os
+import re
 import sys
 
 SUPPORTED = ("zh", "en")
@@ -42,7 +45,14 @@ def load_dotenv():
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     k, v = line.split("=", 1)
-                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    k, v = k.strip(), v.strip()
+                    if v[:1] in ("'", '"') and v[0] in v[1:]:
+                        # 引號包住的值：引號裡的一切（含 #）原樣保留，只去掉引號；收尾引號之後的行內註解不算值
+                        v = v[1:v.index(v[0], 1)]
+                    else:
+                        # 沒有引號的值：第一個「空白 + #」之後是行內註解（比照 python-dotenv）。以前整段都當成值，
+                        # LIT_LANG=en   # 註解 會讀成 "en   # 註解"——不認得的語言，輸出悄悄退回中文。
+                        v = re.sub(r"\s+#.*", "", v).rstrip().strip('"').strip("'")
                     # LIT_LANG 空值視為未設是文件承諾；其他鍵維持「已設就不覆蓋」，與 b0db1e0 相同
                     if k == ENV_VAR and not os.environ.get(k):
                         os.environ[k] = v

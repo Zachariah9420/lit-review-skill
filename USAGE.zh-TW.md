@@ -137,7 +137,7 @@ LIT_LANG=en
 學術 API 幾乎不收中文文獻。環境有 Google Scholar 工具時會用原文標題盡力查(標「信心中等」)；查無或沒工具就列「需人工查核」。它不會拿英譯標題去英文庫硬配——那會產生錯誤配對。
 
 **Q：可以輸出英文嗎？**
-腳本可以。在 `.env` 或環境變數設 `LIT_LANG=en`，或單次執行加 `--lang en`（或 `--lang=en`，放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先目前目錄，再 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；大小寫與地區後綴不影響（`EN`、`en-US` 都認）；其他值一律退回中文，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
+腳本可以。在 `.env` 或環境變數設 `LIT_LANG=en`，或單次執行加 `--lang en`（或 `--lang=en`，放在子命令前後都可以）。優先順序：`--lang` > 環境變數 `LIT_LANG` > `.env`（先目前目錄，再 `~/.env`）> 預設 `zh`。`LIT_LANG` 的空值視為未設（只限 `LIT_LANG`：其他鍵在環境變數裡已設定的，即使是空字串，也不會被 `.env` 取代）；`.env` 裡沒有引號的值後面接空格與 `#`，從那裡起是行內註解、不算值（`LIT_LANG=en   # 註解` 讀成 `en`；用成對引號包住的值連 `#` 一起保留）；大小寫與地區後綴不影響（`EN`、`en-US` 都認）；其他值一律退回中文，並在 stderr 印一行警告。`lit_api.py` 與 `cite_integrity.py` 都認這個設定。
 
 改變的是說明文字：`message`、`note`／`_note`、`recommendation`、`confidence_note`、`status`、`hint`、`absence_note`、`single_source_degraded`、`quality_warnings`、`downgrade_reasons`、`derivative_item_risk`、`journal_doi_status`、`s2_note`、`source_discrepancy`、`coverage_caveat`、`how_to_get`、`unsupported_style_note`、`-h` 說明，以及 `integrity` 的文字報告；另有三個看起來像資料的值也會跟著變：`citations_source`、`label`、`published_version.source`（見 `references/api-notes.md`），程式判斷不要比對它們。兩種語言都一樣的是：JSON 欄位名、`verdict_hint` 值、錯誤碼、`basis`／`version_link` 值、狀態 emoji（✅❌❓⚠️🚨🔒）與離開碼。
 
